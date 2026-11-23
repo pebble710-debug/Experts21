@@ -2,7 +2,7 @@
 
 - **Created:** 2026-11-23
 - **Based on:** the research in this folder ([README](README.md), files 01–09). Each role lists the research file that justifies it.
-- **Status:** Planning document only. **No agents or skill files have been created yet.** That happens in Step 5.
+- **Status:** Built in Step 5. All 24 experts are project subagents in `.claude/agents/`, and all 24 shared skills are project skills in `.claude/skills/`. The `orchestrator` (A25) and `agent-builder` (A26) were added too. See `CLAUDE.md` at the repo root for how to use them.
 - **Size:** 24 experts and 24 shared skills.
 
 ## How to read this
