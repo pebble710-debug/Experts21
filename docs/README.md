@@ -19,6 +19,7 @@ Background research for opening an independent **specialty coffee shop in Miami,
 | 7 | [07-staffing.md](07-staffing.md) | Roles, wages, labor law, hiring market |
 | 8 | [08-marketing.md](08-marketing.md) | Positioning, channels, launch plan, local calendar |
 | 9 | [09-risks.md](09-risks.md) | Biggest risks, ranked, with ways to reduce them |
+| — | [expert-roster.md](expert-roster.md) | **Expert team plan:** 24 specialist roles, their skills, and a shared-skill map (agents are built in Step 5) |
 
 ## Evidence labels (used in every file)
 
