@@ -13,6 +13,9 @@ import sys
 
 import yaml
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import routing_cases  # noqa: E402
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENTS_DIR = os.path.join(ROOT, ".claude", "agents")
 SKILLS_DIR = os.path.join(ROOT, ".claude", "skills")
@@ -157,13 +160,50 @@ def parse_routing(body):
     return rows
 
 
-def route(question, rows):
-    q = question.lower()
+def parse_playbooks(body):
+    """Parse the 'Problem playbooks' table: (problem, signals, core, add)."""
+    rows, in_table = [], False
+    for line in body.splitlines():
+        if line.startswith("| Business problem | How users might say it"):
+            in_table = True
+            continue
+        if in_table:
+            if not line.startswith("|"):
+                break
+            if line.startswith("|---"):
+                continue
+            problem, signals, core, add = [c.strip() for c in line.strip("|").split("|")]
+            core = re.sub(r"\([^)]*\)", "", core)  # allow short notes in parentheses
+            rows.append((problem,
+                         [k.strip().lower() for k in signals.split(",") if k.strip()],
+                         [x.strip() for x in core.split(",") if x.strip()],
+                         [x.strip() for x in add.split(",") if x.strip()]))
+    return rows
+
+
+def _hit(phrase, text):
+    # whole-word match that also accepts simple plurals ("barista" ~ "baristas")
+    pat = r"(?<![a-z])" + re.escape(phrase) + r"(?:s|es)?(?![a-z])"
+    return re.search(pat, text) is not None
+
+
+def route(question, rows, playbooks=()):
+    """Offline approximation of the orchestrator's routing.
+
+    The real orchestrator routes by meaning (Steps A-E in its file). This
+    proxy checks that the documented signals and keyword hints alone already
+    reach the right experts for the test phrasings.
+    """
+    q = question.lower().replace("’", "'")
     primary, support = set(), set()
     for _, kws, prim, sup in rows:
-        if any(re.search(r"(?<![a-z])" + re.escape(k) + r"(?![a-z])", q) for k in kws):
+        if any(_hit(k, q) for k in kws):
             primary.update(prim)
             support.update(sup)
+    for _, signals, core, add in playbooks:
+        if any(_hit(k, q) for k in signals):
+            primary.update(core)
+            support.update(add)
     return primary, support
 
 
@@ -288,12 +328,37 @@ def main():
     for slug in list(specialists) + ["agent-builder"]:
         check(f"T32 orchestrator directory lists {slug}", f"`{slug}`" in obody)
     for q, expected in ROUTING_CASES:
-        prim, sup = route(q, rows)
+        prim, sup = route(q, rows, parse_playbooks(obody))
         ok = expected <= prim
         if len(expected) == 1:
             ok = ok and len(prim) <= MAX_PRIMARY_FOR_NARROW
         check(f"T33 route: {q[:60]}", ok,
               f"expected {sorted(expected)} got {sorted(prim)}")
+
+    # ---------------------------------------------- semantic routing (T39-T43)
+    check("T39 orchestrator routes by meaning (section + steps A-E + routing decision)",
+          "## Route by meaning, not by keywords" in obody
+          and all(f"**Step {x}" in obody for x in "ABCDE")
+          and "**Routing decision:**" in obody)
+    books = parse_playbooks(obody)
+    names_in_books = {a for _, _, c, ad in books for a in c + ad}
+    check("T40 problem playbooks parsed (>= 12) and name only real agents",
+          len(books) >= 12 and names_in_books <= set(agents),
+          f"{len(books)} rows; unknown {names_in_books - set(agents)}")
+    area_sect = obody.split("**Step C:", 1)[-1].split("**Step D:", 1)[0]
+    area_agents = set(re.findall(r"`([a-z0-9\-]+)`", area_sect))
+    check("T41 eight-area check covers every specialist with real names",
+          area_agents == set(specialists), f"missing {set(specialists) - area_agents}")
+    for phrase in routing_cases.STAFFING_PHRASES:
+        prim, _ = route(phrase, rows, books)
+        ok, missing = routing_cases.passes(prim, [{a} for a in routing_cases.STAFF])
+        check(f"T42 staffing paraphrase routes to talent/ops/employment-law: {phrase}", ok,
+              f"missing {missing}; got {sorted(prim)}")
+    for case in routing_cases.CASES:
+        prim, _ = route(case["prompt"], rows, books)
+        ok, missing = routing_cases.passes(prim, case["required"])
+        check(f"T43 guide example without expert names routes correctly: {case['id']}", ok,
+              f"missing {missing}; got {sorted(prim)}")
 
     bmeta, bbody = agents.get("agent-builder", ({}, ""))
     btools = set(split_tools(bmeta.get("tools", "")))
@@ -318,10 +383,11 @@ def main():
             print(f"FAIL {name} {detail}")
     groups = sorted({r[0].split()[0] for r in results})
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed "
-          f"across {len(groups)} test groups (T01-T38).")
+          f"across {len(groups)} test groups (T01-T43).")
     print(f"Agents: {len(agents)} ({len(specialists)} specialists + "
           f"{len(META_AGENTS & set(agents))} meta). Skills: {len(skills)}. "
-          f"Routing cases: {len(ROUTING_CASES)}.")
+          f"Routing cases: {len(ROUTING_CASES)} keyword + {len(routing_cases.STAFFING_PHRASES)} paraphrase "
+          f"+ {len(routing_cases.CASES)} guide/no-names.")
     return 1 if failed else 0
 
 

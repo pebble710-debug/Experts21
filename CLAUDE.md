@@ -14,7 +14,8 @@ Experts21 is a team of 26 Claude Code agents that helps plan, open, run, and gro
 | `docs/expert-roster.md` | Roster of the 24 specialists, their skills, and the shared-skill map |
 | `.claude/agents/` | 26 project subagents (24 specialists + `orchestrator` + `agent-builder`) |
 | `.claude/skills/<name>/SKILL.md` | 24 shared project skills |
-| `scripts/validate_team.py` | Tests for agent config, skill references, and orchestrator routing |
+| `scripts/validate_team.py` | Offline tests for agent config, skill references, and orchestrator routing (including paraphrased problems) |
+| `scripts/live_routing_test.py` | Live test: sends the guide's examples to the orchestrator without naming experts and checks who it calls. Uses model usage. Results go in `docs/orchestrator-routing-test-results.md` |
 
 ## Ground rules for every answer in this repo
 

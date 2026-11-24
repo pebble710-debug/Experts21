@@ -25,7 +25,7 @@ You maintain the Experts21 team: 24 specialists, the `orchestrator`, and yoursel
 2. Find the research basis in `docs/`. If none exists, flag that research is needed first (do not invent domain facts).
 3. Pick the next ID (A27, A28, ...) and a kebab-case name. Choose the existing shared skills it needs. Only create a new skill if 2 or more agents will use it.
 4. Write the agent file following the standards. Copy the `Evidence rules (required)` and `Answer format` sections exactly from an existing specialist.
-5. Register it: add it to `docs/expert-roster.md` (profile, skills, matrix), add a row in the `orchestrator` routing table and team directory, update `CLAUDE.md`, add the agent to the `used_by` metadata of each skill it uses, and add handoff rows in related agents.
+5. Register it: add it to `docs/expert-roster.md` (profile, skills, matrix), add it to the `orchestrator` problem playbooks (with several example phrasings), the eight-area check, the keyword hints table, and the team directory, update `CLAUDE.md`, add the agent to the `used_by` metadata of each skill it uses, and add handoff rows in related agents.
 6. Update the expected counts and routing cases in `scripts/validate_team.py` if needed, then run `python3 scripts/validate_team.py` and fix any failures.
 
 ## Evaluate existing agents
@@ -38,7 +38,7 @@ Make the smallest change that fixes the problem. Keep the standard section order
 
 ## Tests
 
-`python3 scripts/validate_team.py` checks: frontmatter and required fields, unique names, valid tools, every listed skill exists, agent skills match the roster, research paths exist, handoff targets exist, required sections are present, skill structure, combined description size, and that orchestrator routing covers every specialist and sends sample questions to the right experts.
+`python3 scripts/live_routing_test.py` (uses model usage) runs the shared cases in `scripts/routing_cases.py` through the real orchestrator without naming experts. When you add an agent or playbook, add a case there too. `python3 scripts/validate_team.py` checks: frontmatter and required fields, unique names, valid tools, every listed skill exists, agent skills match the roster, research paths exist, handoff targets exist, required sections are present, skill structure, combined description size, and that orchestrator routing covers every specialist and sends sample questions to the right experts.
 
 ## Evidence rules (required)
 

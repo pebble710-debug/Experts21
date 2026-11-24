@@ -123,13 +123,18 @@ claude --agent orchestrator
 
 Then ask your questions one after another. Each one is routed to the team.
 
+**You don't need to know any expert names.** Describe the problem in your own words. The orchestrator works out what you **mean**, not which words you used. For example, "two baristas quit," "employee turnover is brutal," "we're short-staffed," and "hiring problems" all bring in the same three experts: `talent-acquisition-training-manager`, `cafe-operations-manager`, and `employment-law-hr-compliance-specialist`. It also includes experts for problems you only imply. For example, cutting staff hours raises wage-law questions. The top of its answer shows a short **Routing decision** listing which experts it chose and why.
+
 ### What the orchestrator does behind the scenes
 
 ```text
 Your question
      │
      ▼
- orchestrator ──► picks the right experts (usually 2–6)
+ orchestrator ──► works out the underlying problems (by meaning)
+     │
+     ▼
+              ──► picks the right experts (usually 2–6, more for tangled problems)
      │
      ├──► expert 1 ─┐
      ├──► expert 2 ─┤  (they work at the same time)
@@ -153,7 +158,7 @@ When experts disagree, the orchestrator settles it in this order of priority:
 
 ## 5. How to have the orchestrator coordinate specific experts and return one combined recommendation
 
-Section 4 lets the orchestrator choose the experts. If **you** want to decide who takes part (for the most predictable results), use this fill-in-the-blank template:
+Section 4 lets the orchestrator choose the experts, and it does this well on its own: all four examples below were tested **without** naming any experts (see [the test results](orchestrator-routing-test-results.md)). If **you** want to decide who takes part, use this fill-in-the-blank template. The orchestrator includes the experts you name and adds any others it thinks are needed, explaining why:
 
 ```text
 @agent-orchestrator
@@ -170,7 +175,7 @@ Tips:
 - **Ask for the disagreements.** That's where the real decisions are.
 - **Follow up in the same conversation:** "Ask the financial-modeling-funding-strategist to rerun the numbers with rent at $60/sq ft instead."
 
-All four examples below use this template.
+All four examples below use this template. You can also delete the "Experts to involve" and "Order" lines and let the orchestrator decide.
 
 ---
 
@@ -382,6 +387,7 @@ The research warns that Miami cafés usually slow down in summer (June–Septemb
 
 A combined answer from the orchestrator usually has these parts:
 
+0. **Routing decision:** the problems the orchestrator identified, and which experts it chose for each and why.
 1. **Recommendation:** the bottom line. Read this first.
 2. **Experts consulted:** who took part and what each one found.
 3. **Where experts agree:** the safest conclusions.
@@ -412,7 +418,7 @@ Single experts give a shorter version: Answer → Details → Assumptions → Ha
 |---|---|
 | The expert's name doesn't pop up after `@` | Make sure you opened Claude Code in the **Experts21** project. Type the name exactly, with hyphens (see Appendix A). |
 | The answer came from the main assistant, not an expert | Use the `@agent-` form, for example `@agent-orchestrator`, instead of just mentioning the name. |
-| The orchestrator skipped an expert you wanted | Name the experts in the **"Experts to involve"** line (section 5). |
+| The orchestrator skipped an expert you wanted | Check its **Routing decision** to see why. Then ask a follow-up ("Also include the risk-insurance-hurricane-manager") or name the experts in the **"Experts to involve"** line (section 5). |
 | An answer seems out of date | The research is dated 2026-11-23. Ask the expert to check the official source and give the date. |
 | You want a new type of expert (for example, on-site roasting) | Ask `@agent-agent-builder Create a specialist for on-site roasting and air permits.` |
 
