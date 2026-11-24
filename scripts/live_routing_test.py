@@ -35,7 +35,7 @@ def run_case(case):
            "--max-turns", "40", case["prompt"] + HARNESS_NOTE]
     proc = subprocess.run(cmd, cwd=ROOT, stdin=subprocess.DEVNULL, capture_output=True,
                           text=True, timeout=1800)
-    called, result, is_error = [], "", None
+    called, results, errors = [], [], []
     for line in proc.stdout.splitlines():
         try:
             ev = json.loads(line)
@@ -46,7 +46,12 @@ def run_case(case):
                 if c.get("type") == "tool_use" and c.get("name") in ("Agent", "Task"):
                     called.append(c["input"].get("subagent_type"))
         if ev.get("type") == "result":
-            result, is_error = ev.get("result", ""), ev.get("is_error")
+            # A run can emit more than one result event (for example, a late
+            # background subagent triggers a short follow-up turn); keep them all.
+            results.append(ev.get("result", "") or "")
+            errors.append(bool(ev.get("is_error")))
+    result = "\n\n".join(results)
+    is_error = any(errors) or not results
     ok_route, missing = routing_cases.passes(called, case["required"])
     checks = {
         "required experts selected": ok_route,
