@@ -1,0 +1,32 @@
+{
+  "name": "experts21-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "React web app for the Experts21 Miami specialty coffee shop expert team (Netlify + Anthropic API)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "data": "node scripts/build-data.mjs",
+    "dev": "npm run data && vite",
+    "build": "npm run data && vite build",
+    "preview:local": "npm run build && node scripts/local-server.mjs",
+    "test": "npm run data && node --test tests/*.test.mjs",
+    "test:e2e": "npm run build && node tests/e2e/run-e2e.mjs",
+    "check:secrets": "node scripts/check-secrets.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.13.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.3.0",
+    "esbuild": "^0.28.2",
+    "vite": "^8.3.8",
+    "yaml": "^2.9.1"
+  }
+}

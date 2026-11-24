@@ -16,6 +16,8 @@ Experts21 is a team of 26 Claude Code agents that helps plan, open, run, and gro
 | `.claude/agents/` | 26 project subagents (24 specialists + `orchestrator` + `agent-builder`) |
 | `knowledge/<agent-name>/` | Each agent's own knowledge folder (26), read before answering |
 | `.claude/skills/<name>/SKILL.md` | 24 shared project skills |
+| `web/` | React web app + Netlify Function for chatting with the experts (see `web/README.md`) |
+| `netlify.toml` | Netlify build configuration for `web/` |
 | `scripts/validate_team.py` | Offline tests for agent config, skill references, and orchestrator routing (including paraphrased problems) |
 | `scripts/live_routing_test.py` | Live test: sends the guide's examples to the orchestrator without naming experts and checks who it calls. Uses model usage. Results go in `docs/orchestrator-routing-test-results.md` |
 
@@ -126,6 +128,19 @@ Tip: give the orchestrator context (budget, neighborhood, concept, timeline) so 
 python3 scripts/validate_team.py
 ```
 
-## Not built yet
+## Web app (`web/`)
 
-The website comes later (Step 11). Do not build it until asked.
+`web/` is a React app with a Netlify Function (`web/netlify/functions/api.mjs`) that lets users chat with any expert or **Ask the Whole Team**: Ava routes the question, each chosen expert answers in its own Claude API call, and Ava combines the signed answers.
+
+- The build (`web/scripts/build-data.mjs`) loads the agents, skills, knowledge folders, research, and these ground rules from this repository, so changes here flow into the site on the next build.
+- The Anthropic API key (`ANTHROPIC_API_KEY`) and the optional `APP_PASSWORD` are Netlify environment variables. They are read only by the function and never shipped to the browser.
+- `netlify.toml` at the repo root configures the build.
+- Tests:
+  ```bash
+  cd web && npm test
+  ```
+  ```bash
+  cd web && npm run test:e2e
+  ```
+- Details and deployment steps: `web/README.md`.
+- **Status:** built and tested locally (Step 11 Part A). Not deployed yet. Deployment is Part B; don't deploy until asked.

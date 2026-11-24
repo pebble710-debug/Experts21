@@ -1,0 +1,25 @@
+# Netlify configuration for the Experts21 web app (React + Netlify Functions).
+# The app lives in web/, but its build step reads the agents, skills, knowledge
+# folders, and research from the repository root (.claude/, knowledge/, docs/).
+[build]
+  base = "web"
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# No catch-all redirect: the app is a single page at "/", and /api/* is routed to
+# the function by its in-code config (export const config = { path: "/api/*" }).
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "DENY"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"

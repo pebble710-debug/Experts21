@@ -11,6 +11,7 @@ A team of **26 AI expert agents** (Claude Code subagents) that helps plan, open,
 | See the research the experts use | [`docs/README.md`](docs/README.md) |
 | See the team roster and shared skills | [`docs/expert-roster.md`](docs/expert-roster.md) |
 | Understand how the project is organized (for Claude Code and maintainers) | [`CLAUDE.md`](CLAUDE.md) |
+| Use or deploy the web app | [`web/README.md`](web/README.md) |
 
 ## Quick examples
 
@@ -21,6 +22,10 @@ A team of **26 AI expert agents** (Claude Code subagents) that helps plan, open,
 ```text
 @agent-head-of-coffee-beverage-program Design a specialty cortadito and colada with recipes and drink costs.
 ```
+
+## Web app
+
+`web/` contains a React website where users can chat with any of the 26 experts or **Ask the Whole Team**. In a whole-team question, Ava picks the specialists, each one answers in its own Claude call, and Ava combines their answers. The site is built from this repository's agents, skills, knowledge folders, and research. The API key stays on the server, in a Netlify Function. Build, test, and deployment steps are in [`web/README.md`](web/README.md). It is not deployed yet.
 
 ## Knowledge folders
 
@@ -42,6 +47,8 @@ See [`knowledge/README.md`](knowledge/README.md) for the full list of folders, a
 | `.claude/skills/` | 24 shared skills |
 | `knowledge/` | One knowledge folder per agent |
 | `scripts/` | Tests: `validate_team.py` (offline) and `live_routing_test.py` (live, uses model usage) |
+| `web/` | React web app + Netlify Function: chat with one expert or ask the whole team (not deployed yet) |
+| `netlify.toml` | Netlify build configuration for the web app |
 
 ## Run the tests
 
