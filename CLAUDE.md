@@ -10,6 +10,7 @@ Experts21 is a team of 26 Claude Code agents that helps plan, open, run, and gro
 |---|---|
 | `docs/README.md` | Research index, **evidence labels**, key numbers, open questions |
 | `docs/01-…09-*.md` | Research: market, customers, competitors, startup costs, operating costs, permits, staffing, marketing, risks |
+| `docs/how-to-talk-to-your-experts.md` | Plain-language user guide with four multi-expert example prompts |
 | `docs/expert-roster.md` | Roster of the 24 specialists, their skills, and the shared-skill map |
 | `.claude/agents/` | 26 project subagents (24 specialists + `orchestrator` + `agent-builder`) |
 | `.claude/skills/<name>/SKILL.md` | 24 shared project skills |
