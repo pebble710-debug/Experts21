@@ -28,7 +28,17 @@ HARNESS_NOTE = ("\n\n(Test run: keep each expert's brief and answer short, under
                 "and use only the docs/ research, no web lookups.)")
 
 
-def run_case(case):
+def run_case(case, attempts=2):
+    """Run one case; retry once if the CLI returns no answer (e.g. a transient API error)."""
+    for attempt in range(1, attempts + 1):
+        out = _run_once(case)
+        out["attempts"] = attempt
+        if out["has_result"]:
+            return out
+    return out
+
+
+def _run_once(case):
     cmd = ["claude", "-p", "--agent", "orchestrator", "--output-format", "stream-json", "--verbose",
            "--allowedTools", "Agent,Read,Grep,Glob,Skill",
            "--disallowedTools", "WebSearch,WebFetch",
@@ -61,7 +71,8 @@ def run_case(case):
         "evidence labels used": any(l in result for l in ("[CONFIRMED]", "[REPORTED]", "[ESTIMATE]")),
         "run completed without error": proc.returncode == 0 and not is_error,
     }
-    return {"case": case, "called": called, "missing": missing, "checks": checks, "result": result}
+    return {"case": case, "called": called, "missing": missing, "checks": checks, "result": result,
+            "has_result": bool(results), "stderr": proc.stderr[-1500:], "returncode": proc.returncode}
 
 
 def routing_excerpt(result):
@@ -77,7 +88,7 @@ def routing_excerpt(result):
 def main():
     wanted = set(sys.argv[1:])
     cases = [c for c in routing_cases.CASES if not wanted or c["id"] in wanted]
-    with ThreadPoolExecutor(max_workers=len(cases)) as pool:
+    with ThreadPoolExecutor(max_workers=min(3, len(cases))) as pool:
         outcomes = list(pool.map(run_case, cases))
 
     passed = 0
@@ -106,6 +117,9 @@ def main():
         lines += [f"- {'PASS' if v else 'FAIL'}: {k}" for k, v in o["checks"].items()]
         lines += ["", "**Required groups (at least one from each):**", ""]
         lines += [f"- {' or '.join(f'`{a}`' for a in sorted(grp))}" for grp in o["case"]["required"]]
+        if not o["has_result"]:
+            lines += ["", f"**Run error** (exit code {o['returncode']}, attempts {o['attempts']}):", "",
+                      "```text", o["stderr"].strip() or "(no error output)", "```"]
         exc = routing_excerpt(o["result"])
         if exc:
             lines += ["", "**Orchestrator's routing decision (excerpt):**", ""]
@@ -114,6 +128,8 @@ def main():
     with open(REPORT, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     for o in outcomes:
+        if not o["has_result"]:
+            print(o["case"]["id"], "NO ANSWER; stderr:", o["stderr"][-400:])
         print(o["case"]["id"], "PASS" if all(o["checks"].values()) else "FAIL",
               list(dict.fromkeys(o["called"])), {k: v for k, v in o["checks"].items() if not v})
     print(f"{passed}/{len(outcomes)} cases passed. Report: {os.path.relpath(REPORT, ROOT)}")
