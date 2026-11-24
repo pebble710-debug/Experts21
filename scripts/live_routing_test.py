@@ -28,6 +28,18 @@ HARNESS_NOTE = ("\n\n(Test run: keep each expert's brief and answer short, under
                 "and use only the docs/ research, no web lookups.)")
 
 
+def assigned_models():
+    """Model family assigned in each agent file's frontmatter (opus/sonnet/haiku)."""
+    out = {}
+    adir = os.path.join(ROOT, ".claude", "agents")
+    for fn in os.listdir(adir):
+        for line in open(os.path.join(adir, fn), encoding="utf-8"):
+            if line.startswith("model:"):
+                out[fn[:-3]] = line.split(":", 1)[1].strip()
+                break
+    return out
+
+
 def run_case(case, attempts=2):
     """Run one case; retry once if the CLI returns no answer (e.g. a transient API error)."""
     for attempt in range(1, attempts + 1):
@@ -46,6 +58,7 @@ def _run_once(case):
     proc = subprocess.run(cmd, cwd=ROOT, stdin=subprocess.DEVNULL, capture_output=True,
                           text=True, timeout=1800)
     called, results, errors = [], [], []
+    tool_to_agent, models = {}, {}
     for line in proc.stdout.splitlines():
         try:
             ev = json.loads(line)
@@ -55,6 +68,10 @@ def _run_once(case):
             for c in ev["message"].get("content", []):
                 if c.get("type") == "tool_use" and c.get("name") in ("Agent", "Task"):
                     called.append(c["input"].get("subagent_type"))
+                    tool_to_agent[c.get("id")] = c["input"].get("subagent_type")
+            parent = ev.get("parent_tool_use_id")
+            if parent and parent in tool_to_agent and ev["message"].get("model"):
+                models.setdefault(tool_to_agent[parent], set()).add(ev["message"]["model"])
         if ev.get("type") == "result":
             # A run can emit more than one result event (for example, a late
             # background subagent triggers a short follow-up turn); keep them all.
@@ -63,6 +80,9 @@ def _run_once(case):
     result = "\n\n".join(results)
     is_error = any(errors) or not results
     ok_route, missing = routing_cases.passes(called, case["required"])
+    expected_models = assigned_models()
+    model_mismatch = {a: sorted(m) for a, m in models.items()
+                      if a in expected_models and not all(expected_models[a] in x for x in m)}
     checks = {
         "required experts selected": ok_route,
         "routing decision shown": "routing decision" in result.lower(),
@@ -70,9 +90,19 @@ def _run_once(case):
         "disagreements addressed": "disagree" in result.lower(),
         "evidence labels used": any(l in result for l in ("[CONFIRMED]", "[REPORTED]", "[ESTIMATE]")),
         "run completed without error": proc.returncode == 0 and not is_error,
+        "experts ran on their assigned models": not model_mismatch,
     }
     return {"case": case, "called": called, "missing": missing, "checks": checks, "result": result,
-            "has_result": bool(results), "stderr": proc.stderr[-1500:], "returncode": proc.returncode}
+            "has_result": bool(results), "models": {a: sorted(m) for a, m in models.items()},
+            "model_mismatch": model_mismatch, "stderr": proc.stderr[-1500:], "returncode": proc.returncode}
+
+
+def short(model_ids):
+    """'claude-opus-5-5' -> 'opus'; unknown -> '?'."""
+    if not model_ids:
+        return "?"
+    fams = sorted({f for m in model_ids for f in ("opus", "sonnet", "haiku", "fable") if f in m})
+    return "/".join(fams) or ",".join(model_ids)
 
 
 def routing_excerpt(result):
@@ -99,7 +129,8 @@ def main():
              "\"Experts to involve\" and \"Order\" lines removed. A fifth prompt describes a staffing problem "
              "without the word \"barista\".",
              "- **How:** `python3 scripts/live_routing_test.py` (Claude Code CLI, `--agent orchestrator`). "
-             "\"Experts called\" lists the specialist subagents the orchestrator actually launched.",
+             "\"Experts called\" lists the specialist subagents the orchestrator actually launched, "
+             "with the model each one actually ran on (checked against its `model:` field).",
              "- **Pass rule:** at least one expert from every required group was called, and the answer shows "
              "a routing decision, a combined recommendation, disagreements, and evidence labels.", "",
              "| Case | Result | Experts called | Required groups missing |", "|---|---|---|---|"]
@@ -107,8 +138,9 @@ def main():
         ok = all(o["checks"].values())
         passed += ok
         uniq = list(dict.fromkeys(o["called"]))
+        experts = ", ".join(f"`{a}` ({short(o['models'].get(a))})" for a in uniq)
         lines.append(f"| {o['case']['title']} | {'PASS' if ok else 'FAIL'} | "
-                     f"{len(uniq)}: {', '.join(f'`{a}`' for a in uniq)} | "
+                     f"{len(uniq)}: {experts} | "
                      f"{'none' if not o['missing'] else o['missing']} |")
     lines += ["", f"**{passed}/{len(outcomes)} cases passed.**", ""]
     for o in outcomes:

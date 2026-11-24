@@ -12,7 +12,9 @@ Experts21 is a team of 26 Claude Code agents that helps plan, open, run, and gro
 | `docs/01-…09-*.md` | Research: market, customers, competitors, startup costs, operating costs, permits, staffing, marketing, risks |
 | `docs/how-to-talk-to-your-experts.md` | Plain-language user guide with four multi-expert example prompts |
 | `docs/expert-roster.md` | Roster of the 24 specialists, their skills, and the shared-skill map |
+| `docs/agent-brains.md` | Each agent's first name, AI model, personality, reason for the model, and knowledge folder |
 | `.claude/agents/` | 26 project subagents (24 specialists + `orchestrator` + `agent-builder`) |
+| `knowledge/<agent-name>/` | Each agent's own knowledge folder (26), read before answering |
 | `.claude/skills/<name>/SKILL.md` | 24 shared project skills |
 | `scripts/validate_team.py` | Offline tests for agent config, skill references, and orchestrator routing (including paraphrased problems) |
 | `scripts/live_routing_test.py` | Live test: sends the guide's examples to the orchestrator without naming experts and checks who it calls. Uses model usage. Results go in `docs/orchestrator-routing-test-results.md` |
@@ -55,6 +57,18 @@ Experts21 is a team of 26 Claude Code agents that helps plan, open, run, and gro
 | A26 | `agent-builder` | Agent Builder: creates, evaluates, and improves agents and skills | Meta |
 
 Specialists are advisors with read and research tools (`Read, Grep, Glob, WebSearch, WebFetch, Skill`). They cannot call each other. They name handoffs in their answers, and the main session or the `orchestrator` routes the work. The orchestrator also has the `Agent` tool so it can consult specialists. `agent-builder` can edit files and run tests.
+
+## Knowledge folders, models, and personas
+
+**Knowledge folders.** Every agent has its own folder, `knowledge/<agent-name>/`. Its `README.md` lists the documents that belong there (for example, landlord LOIs for `lease-negotiation-specialist`, or roaster price sheets for `coffee-sourcing-roaster-partnership-specialist`) and the `docs/` research that agent always consults. Each agent reads its folder **before answering**:
+
+- If the folder has only `README.md` (the starting state), the agent uses the shared research in `docs/` and says that no additional documents have been provided.
+- If you add documents (quotes, leases, reports, logs, notes), the agent reads the relevant ones first, cites them by file name, labels them by source ([CONFIRMED] for official or signed documents, [REPORTED] for quotes and notes, [UNVERIFIED] for drafts), and flags any conflict with `docs/`.
+- To add a document, save it in the agent's folder with a dated name (for example `knowledge/lease-negotiation-specialist/2026-12-01-landlord-loi.md`), note its source, date, and status at the top, and commit it. Don't store passwords, account numbers, or personal employee records. See `knowledge/README.md`.
+
+**Models.** Each agent's `model:` field sets its Claude model: `opus` (12 agents) for complex strategy, financial, legal, regulatory, and critical decisions, plus the orchestrator and agent-builder; `sonnet` (12) for most specialist work; `haiku` (2) for routine research and high-volume content. The orchestrator does not override these when it calls specialists. Reasons for each choice are in `docs/agent-brains.md`.
+
+**Personas.** Each agent has a unique first name and a professional personality and communication style, set in its `## Identity` section (for example Marcus, the firm lease negotiator, or Ava, the orchestrator). Personality shapes tone, never facts: the evidence rules always apply. Call agents by their agent name (`@agent-lease-negotiation-specialist`). "Ask Marcus…" also works in plain language.
 
 ## How shared skills are used
 
@@ -104,8 +118,8 @@ Tip: give the orchestrator context (budget, neighborhood, concept, timeline) so 
 
 ## Add a new agent or skill
 
-1. Ask `agent-builder`, for example: `@agent-agent-builder Create a specialist for on-site roasting and air permits.`
-2. It follows the project standards. It adds the agent file (and any new shared skill), registers the agent in `docs/expert-roster.md`, the orchestrator routing table, this file, and the skills' `used_by` metadata, then runs the tests.
+1. Ask `agent-builder` (Theo), for example: `@agent-agent-builder Create a specialist for on-site roasting and air permits.`
+2. It follows the project standards. It adds the agent file with a model and an `## Identity` section, creates `knowledge/<agent-name>/README.md`, adds any new shared skill, registers the agent in `docs/agent-brains.md`, `docs/expert-roster.md`, the orchestrator routing table, this file, and the skills' `used_by` metadata, then runs the tests.
 3. To do it by hand, copy an existing specialist in `.claude/agents/`, keep the section structure and the evidence rules, update the registrations above, and run:
 
 ```bash

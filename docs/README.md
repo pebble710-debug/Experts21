@@ -20,6 +20,7 @@ Background research for opening an independent **specialty coffee shop in Miami,
 | 8 | [08-marketing.md](08-marketing.md) | Positioning, channels, launch plan, local calendar |
 | 9 | [09-risks.md](09-risks.md) | Biggest risks, ranked, with ways to reduce them |
 | — | [how-to-talk-to-your-experts.md](how-to-talk-to-your-experts.md) | **User guide:** how to ask one expert or the whole team, with four worked multi-expert examples (no coding needed) |
+| — | [agent-brains.md](agent-brains.md) | **Agent brains:** each agent's first name, AI model, personality, and knowledge folder (`knowledge/<agent-name>/`) |
 | — | [expert-roster.md](expert-roster.md) | **Expert team plan:** 24 specialist roles, their skills, and a shared-skill map (built as agents in `.claude/agents/` and skills in `.claude/skills/`; see `CLAUDE.md`) |
 
 ## Evidence labels (used in every file)

@@ -34,6 +34,18 @@ SPECIALIST_SECTIONS = ["## Mission", "## Responsibilities", "## Research to read
                        "## Evidence rules (required)", "## Answer format"]
 SKILL_SECTIONS = ["## When to use", "## Procedure", "## Reference facts",
                   "## Output", "## Guardrails", "## Used by"]
+VALID_MODELS = {"opus", "sonnet", "haiku"}
+# Roles that must run on Opus (complex strategy, financial, legal, critical decisions)
+MUST_BE_OPUS = {"orchestrator", "agent-builder", "launch-program-director",
+                "financial-modeling-funding-strategist", "entity-tax-bookkeeping-specialist",
+                "lease-negotiation-specialist", "permitting-zoning-expediter",
+                "environmental-utility-compliance-specialist", "food-safety-licensing-specialist",
+                "employment-law-hr-compliance-specialist", "risk-insurance-hurricane-manager"}
+KNOWLEDGE_DIR = os.path.join(ROOT, "knowledge")
+BRAINS = os.path.join(ROOT, "docs", "agent-brains.md")
+NO_DOCS_SENTENCE = "No additional documents have been provided in `knowledge/{slug}/`"
+IDENTITY_FIELDS = ["- **Name:**", "- **Model:**", "- **Personality:**",
+                   "- **Communication style:**", "- **Working style:**"]
 LABELS = ["[CONFIRMED]", "[REPORTED]", "[ESTIMATE]", "[UNVERIFIED]"]
 
 # Sample questions -> experts the orchestrator must include (primary routing).
@@ -365,6 +377,88 @@ def main():
     check("T34 agent-builder can write files and run tests", {"Write", "Edit", "Bash"} <= btools)
     check("T35 agent-builder references the validator", "scripts/validate_team.py" in bbody)
 
+    # ------------------------------------------- models, personas, knowledge (T44-T50)
+    brains_text = open(BRAINS, encoding="utf-8").read() if os.path.exists(BRAINS) else ""
+    brain_rows = {}
+    for line in brains_text.splitlines():
+        m = re.match(r"\| (A\d\d) \| `([a-z0-9\-]+)` — ([^|]+)\| ([^|]+)\| `([a-z]+)` \| ([^|]+)\| ([^|]+)\| \[`(knowledge/[^`]+)`\]", line)
+        if m:
+            brain_rows[m.group(2)] = {"name": m.group(4).strip(), "model": m.group(5),
+                                      "persona": m.group(6).strip(), "reason": m.group(7).strip(),
+                                      "folder": m.group(8)}
+    first_names = {}
+    for name, (meta, body) in agents.items():
+        model = meta.get("model")
+        check(f"T44 {name}: model is a valid Claude Code alias ({model})", model in VALID_MODELS)
+        if name in MUST_BE_OPUS:
+            check(f"T44 {name}: critical/legal/financial role runs on opus", model == "opus")
+
+        kdir = os.path.join(KNOWLEDGE_DIR, name)
+        check(f"T45 {name}: knowledge folder exists with README.md",
+              os.path.isfile(os.path.join(kdir, "README.md")))
+        kreadme = open(os.path.join(kdir, "README.md"), encoding="utf-8").read() \
+            if os.path.isfile(os.path.join(kdir, "README.md")) else ""
+        check(f"T46 {name}: knowledge README names the agent and explains its contents",
+              f"`{name}`" in kreadme and "## Documents that belong here" in kreadme
+              and "## Shared research" in kreadme and "## How to add a document" in kreadme)
+        k_research = set(re.findall(r"`(docs/[\w.\-]+\.md)`",
+                                    kreadme.split("## Shared research", 1)[-1].split("\n## ", 1)[0]))
+        bad = [p for p in k_research if not os.path.exists(os.path.join(ROOT, p))]
+        if name in specialists:
+            sect = body.split("## Research to read first", 1)[1].split("\n## ", 1)[0]
+            a_research = set(re.findall(r"`(docs/0\d-[\w.\-]+\.md)`", sect))
+            ok = a_research and a_research <= k_research and not bad
+            check(f"T47 {name}: knowledge README lists the same research as the agent", ok,
+                  f"agent {sorted(a_research)} vs readme {sorted(k_research)}; missing files {bad}")
+        else:
+            check(f"T47 {name}: knowledge README references existing project docs",
+                  k_research and not bad, f"missing files {bad}")
+
+        ks = body.split("## Knowledge folder", 1)[-1].split("\n## ", 1)[0] if "## Knowledge folder" in body else ""
+        check(f"T48 {name}: reads knowledge/{name}/ first and states the README-only fallback",
+              f"`knowledge/{name}/`" in ks and NO_DOCS_SENTENCE.format(slug=name) in ks
+              and "docs/" in ks)
+        if name in specialists:
+            check(f"T48 {name}: 'How to work' starts from the knowledge folder",
+                  f"Read your knowledge folder `knowledge/{name}/`" in body)
+
+        idn = body.split("## Identity", 1)[-1].split("\n## ", 1)[0] if "## Identity" in body else ""
+        fn = re.search(r"- \*\*Name:\*\* (\S+)", idn)
+        idmodel = re.search(r"- \*\*Model:\*\* `([a-z]+)`", idn)
+        check(f"T49 {name}: Identity section has name, model, personality, styles",
+              all(f in idn for f in IDENTITY_FIELDS) and fn and idmodel
+              and idmodel.group(1) == model)
+        if fn:
+            first_names.setdefault(fn.group(1), []).append(name)
+            check(f"T49 {name}: description starts with the persona's first name",
+                  str(meta.get("description", "")).startswith(fn.group(1) + " — "))
+        row = brain_rows.get(name)
+        check(f"T50 {name}: documented in docs/agent-brains.md (name, model, personality, reason, folder)",
+              row is not None and fn is not None and row["name"] == fn.group(1)
+              and row["model"] == model and len(row["persona"]) > 20 and len(row["reason"]) > 20
+              and row["folder"] == f"knowledge/{name}/",
+              f"row {row}")
+    dupes = {n: a for n, a in first_names.items() if len(a) > 1}
+    check("T49 first names are unique across all 26 agents", not dupes and len(first_names) == 26,
+          f"dupes {dupes}")
+    folders = {d for d in os.listdir(KNOWLEDGE_DIR) if os.path.isdir(os.path.join(KNOWLEDGE_DIR, d))} \
+        if os.path.isdir(KNOWLEDGE_DIR) else set()
+    check("T45 exactly one knowledge folder per agent (26, no orphans)", folders == set(agents),
+          f"orphans {folders - set(agents)}, missing {set(agents) - folders}")
+    check("T45 knowledge/README.md explains the folders",
+          os.path.isfile(os.path.join(KNOWLEDGE_DIR, "README.md")))
+    check("T50 docs/agent-brains.md has one row per agent", set(brain_rows) == set(agents),
+          f"missing {set(agents) - set(brain_rows)}")
+    ometa_body = agents.get("orchestrator", ({}, ""))[1]
+    check("T44 orchestrator does not override specialists' models",
+          "Do not pass a `model` parameter" in ometa_body)
+    readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+    for label, text in (("CLAUDE.md", open(os.path.join(ROOT, "CLAUDE.md"), encoding="utf-8").read()),
+                        ("README.md", readme)):
+        check(f"T50 {label} explains knowledge folders and links agent-brains.md",
+              "## Knowledge folders" in text and "knowledge/<agent-name>/" in text
+              and "agent-brains.md" in text)
+
     # ---------------------------------------------------------- CLAUDE.md
     cpath = os.path.join(ROOT, "CLAUDE.md")
     ctext = open(cpath, encoding="utf-8").read() if os.path.exists(cpath) else ""
@@ -383,7 +477,7 @@ def main():
             print(f"FAIL {name} {detail}")
     groups = sorted({r[0].split()[0] for r in results})
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed "
-          f"across {len(groups)} test groups (T01-T43).")
+          f"across {len(groups)} test groups (T01-T50).")
     print(f"Agents: {len(agents)} ({len(specialists)} specialists + "
           f"{len(META_AGENTS & set(agents))} meta). Skills: {len(skills)}. "
           f"Routing cases: {len(ROUTING_CASES)} keyword + {len(routing_cases.STAFFING_PHRASES)} paraphrase "

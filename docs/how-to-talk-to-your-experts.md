@@ -420,6 +420,8 @@ Single experts give a shorter version: Answer → Details → Assumptions → Ha
 | The answer came from the main assistant, not an expert | Use the `@agent-` form, for example `@agent-orchestrator`, instead of just mentioning the name. |
 | The orchestrator skipped an expert you wanted | Check its **Routing decision** to see why. Then ask a follow-up ("Also include the risk-insurance-hurricane-manager") or name the experts in the **"Experts to involve"** line (section 5). |
 | An answer seems out of date | The research is dated 2026-11-23. Ask the expert to check the official source and give the date. |
+| You want to call an expert by first name ("Marcus") | Plain language works: "Ask Marcus, the lease-negotiation-specialist, to…". For `@` mentions, use the agent name. All first names are in [agent-brains.md](agent-brains.md). |
+| You want the experts to use your own documents (a lease, quotes, sales reports) | Save the file in that expert's folder, `knowledge/<agent-name>/`, and commit it. See the folder's README. |
 | You want a new type of expert (for example, on-site roasting) | Ask `@agent-agent-builder Create a specialist for on-site roasting and air permits.` |
 
 ---
