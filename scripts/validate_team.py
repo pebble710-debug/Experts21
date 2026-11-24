@@ -339,7 +339,7 @@ def main():
     check("T39 orchestrator routes by meaning (section + steps A-E + routing decision)",
           "## Route by meaning, not by keywords" in obody
           and all(f"**Step {x}" in obody for x in "ABCDE")
-          and "**Routing decision:**" in obody)
+          and "`## Routing decision`" in obody)
     books = parse_playbooks(obody)
     names_in_books = {a for _, _, c, ad in books for a in c + ad}
     check("T40 problem playbooks parsed (>= 12) and name only real agents",

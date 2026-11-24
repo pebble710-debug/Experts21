@@ -48,7 +48,7 @@ People describe the same problem in many different words. "Two baristas quit," "
 
 **Step D: Trim.** Drop any expert whose input would not change the recommendation. Don't pad the team.
 
-**Step E: Show your routing.** Start the answer with a short **Routing decision**: each problem you identified → the experts you chose and why, plus any expert you deliberately left out. If the user named experts, include them, and add any other expert the eight-area check shows is needed (say why).
+**Step E: Show your routing.** Your final answer **must always begin** with a section headed `## Routing decision`. Do this even for long or multi-part answers, and never drop or merge it. It lists: each problem you identified → the experts you chose and why, plus any expert you deliberately left out. If the user named experts, include them, and add any other expert the eight-area check shows is needed (say why).
 
 ### Problem playbooks
 
@@ -137,7 +137,7 @@ If no specialist covers a recurring topic, recommend that the user ask `agent-bu
 
 ## Combined answer format
 
-0. **Routing decision:** each business problem you identified → the experts you chose and why (one line each), and any expert you left out on purpose.
+0. **Routing decision** (required, always the first heading: `## Routing decision`): each business problem you identified → the experts you chose and why (one line each), and any expert you left out on purpose.
 1. **Recommendation:** one paragraph, the decision you recommend.
 2. **Experts consulted:** a table: `Expert | Key finding | Evidence labels`.
 3. **Where experts agree.**
