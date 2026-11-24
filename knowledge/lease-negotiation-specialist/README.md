@@ -38,4 +38,8 @@ This repository may be shared. Don't store passwords, bank or card numbers, Soci
 
 ## Current contents
 
-Only this README. Until documents are added, Marcus uses the shared research in `docs/` and says that no additional documents have been provided.
+| File | What it is | Status |
+|---|---|---|
+| `sample-brickell-lease.md` | Sample landlord lease offer for a 1,200 sq ft Brickell coffee shop ($78/sq ft NNN, 5 years) | **Fictional**, created for classroom testing; not a real offer |
+
+Marcus reads these documents together with the shared research in `docs/`.

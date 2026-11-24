@@ -4,19 +4,22 @@
 - **How:** `python3 scripts/live_knowledge_test.py` runs each agent directly (`claude -p --agent <name>`).
 - **Case 1:** the agent's folder contains only `README.md`. Expect the agent to use `docs/` and say no additional documents were provided.
 - **Case 2:** a temporary, clearly marked TEST LOI is placed in the folder. Expect the agent to read it and cite it. The file is deleted after the run.
+- **Case 3:** the owner's committed `sample-brickell-lease.md` is in the folder. The question does **not** give the file name or location. Expect the agent to find it by checking its folder, read it, and cite it along with `docs/` research.
 
 | Case | Agent | Result | Model actually used |
 |---|---|---|---|
 | readme-only-folder | `competitive-intelligence-analyst` (Diego) | PASS | claude-haiku-5-5 |
 | folder-with-document | `lease-negotiation-specialist` (Marcus) | PASS | claude-opus-5-5 |
+| finds-committed-document | `lease-negotiation-specialist` (Marcus) | PASS | claude-opus-5-5 |
 
-**2/2 cases passed.**
+**3/3 cases passed.**
 
 ## readme-only-folder
 
 **Checks:**
 
 - PASS: agent opened its knowledge folder
+- PASS: read the expected document
 - PASS: introduces itself by first name
 - PASS: expected content present
 - PASS: ran on assigned model (haiku)
@@ -24,29 +27,26 @@
 
 **Answer (first 1,500 characters):**
 
-> Diego, Competitive Intelligence Analyst. No additional documents have been provided in `knowledge/competitive-intelligence-analyst/`; this answer uses the shared research in `docs/` only (research date 2026-11-23).
+> Diego, Competitive Intelligence Analyst. No additional documents have been provided in `knowledge/competitive-intelligence-analyst/`; this answer uses the shared research in `docs/`.
 >
-> **Answer:** Watch four groups: Brickell-area specialty cafés (the direct rivals), Latin-style specialty brands, incoming chains, and mass chains plus ventanitas for price.
+> **Answer:** Watch four groups. The Brickell local cafés are the closest direct rivals. The incoming specialty chains and Starbucks/Dunkin' matter for convenience and traffic, and ventanitas set the price anchor.
 >
-> - **Direct specialty:** Pasion del Cielo (Brickell listed) [REPORTED]; Crema Gourmet, Brickell West, opened Dec 2025 [REPORTED]; Ludlow, second site at Domus Brickell Park, planned spring 2026 [REPORTED]
-> - **Latin-style specialty:** Cortadito, fourth location announced Downtown [REPORTED]
-> - **Incoming chains:** Black Sheep and The Coffee have no reported Brickell site [REPORTED]; watch for entry
-> - **Mass chains:** Starbucks and Dunkin' locations were not counted in the research [Not covered]; map within 0.5 mile
-> - **Price anchor:** ventanita colada averaged about $2.06 in 2022 [UNVERIFIED for current prices]
+> **Watch list (docs/03-competitors.md):**
+> - **Local specialty:** Ludlow Coffee Supply (second site planned at Domus Brickell Park) [REPORTED]; Crema Gourmet (Brickell West, Dec 2025) [REPORTED]; Pasion del Cielo (Brickell) [REPORTED]; Panther Coffee and Per'La (also possible suppliers) [REPORTED].
+> - **Incoming chains:** Black Sheep (Coconut Grove, Aug 2025) [REPORTED]; The Coffee (Wynwood, Dec 2025) [REPORTED]; 7 Brew (entry unconfirmed) [UNVERIFIED].
+> - **Mass chains:** Starbucks and Dunkin' locations were not counted in the research. Map them within 0.5 mile [UNVERIFIED].
+> - **Ventanitas:** average colada about $2.06 in 2022 [UNVERIFIED for current prices].
 >
-> **Open questions:** Verify each Brickell café's status and address on Google Maps, since openings often slip. Map Starbucks and Dunkin' counts. 7 Brew has no announced sites [UNVERIFIED].
+> **Recheck:** Every item above is older than three months, and Ludlow's spring 2026 date has already passed. Verify before acting.
 >
-> **Handoffs:** `site-selection-real-estate-specialist` (competitor density within 0.5 mile can change a site score); `head-of-coffee-beverage-program` (if competitor prices affect the menu).
->
-> **Evidence:**
-> - Brickell cafés and Cortadito — [REPORTED] — docs/03-competitors.md
-> - Black Sheep, The Coffee — [RE
+> **Handoffs:** `site-selection-real-estate-specialist` (density near the site); `concept-brand-strategist` (the gap in specialty Cuban-style drinks).
 
 ## folder-with-document
 
 **Checks:**
 
 - PASS: agent opened its knowledge folder
+- PASS: read the expected document
 - PASS: introduces itself by first name
 - PASS: expected content present
 - PASS: ran on assigned model (opus)
@@ -56,23 +56,48 @@
 
 > Marcus, Lease Negotiation Specialist.
 >
-> **Answer:** Don't sign it as written. I reviewed `TEST-2026-11-24-sample-loi-coral-way.md`, and it's marked as a sample draft, not a real offer, so its terms are [UNVERIFIED]. It has no permit contingency, an unlimited personal guarantee for the full 7 years, and no TI allowance or free rent. Rent and NNN alone would be about 15% of conservative sales, which is above our 10–12% target.
+> **Answer:** No, don't sign it as written. The LOI is `TEST-2026-11-24-sample-loi-coral-way.md`, a test draft dated 2026-11-24 [UNVERIFIED]. As written, every protective term in it is red. (`sample-brickell-lease.md` in the same folder is a separate fictional lease offer, not this LOI.)
 >
 > **Details**
 >
 > | Term | LOI | Rating |
 > |---|---|---|
-> | Rent + NNN | $58 + $21 = $79/sq ft × 1,100 sq ft ≈ $86.9k/yr [ESTIMATE] | Red: needs $724k–$869k sales to stay at 10–12%. Conservative sales are $583k, so it's ~14.9%. |
+> | Rent | $58 base + $21 NNN = $79/sq ft all-in on 1,100 sq ft, so about $86,900/yr [ESTIMATE, my calculation] | Amber |
+> | Term | 7 years | Amber |
+> | TI allowance / free rent | $0 / none | Red |
+> | Personal guarantee | Unlimited, for the full term | Red |
 > | Permit contingency | None | Red |
-> | Personal guarantee | Unlimited, full term | Red |
-> | TI allowance / free rent | $0 / none | Amber |
 >
-> **Top three asks (my recommendation):**
-> 1. **Permit contingency.** We can cancel and get our deposit back if zoning, the Certificate of Use or building permits aren't approved by an agreed date.
-> 2. **Limit the personal guarantee.** Cap it at 6–12 months of rent and have it end after 24 months with no default.
-> 3. **Lower the cost.** Ask for a TI allowance, free rent during build-out plus 3 months, and a cap on yearly CAM increases with audit rights. **I'd walk away if rent plus NNN can't get to about 12% of conservative sales.**
+> At 10–12% occupancy, $86,900/yr needs about **$724k–$869k in yearly sales** [ESTIMATE].
 >
-> **Open questions:** These are real terms if the LOI is real. A licensed Florida attorney must review before signing.
+> **Top three changes to ask for:**
+> 1. **Permit contingency.** Add a right to terminate and get the deposit back if zoning, permits, or the Certificate of Use aren't approved within an agreed window. Rent should start only once permits are issued. I won't recommend signing without this.
+> 2. **Personal guarantee.** Cap it at 6–12 months of rent and have it burn off after 24 months with no default.
+> 3. **Build-out money.** Ask for TI allowance plus 3–6 months of free rent during build-out, and a 5% yearly cap on controllable CAM. My walk-away point is an all-in cost above 12% of realistic sales.
 >
-> **Handoffs:**
-> - `financial-modeling-funding-strategist`: 
+> **Assumptions & open questions:** The NNN figure is the landlord's estimate. Rent escalations, renewal options, the use clause, and the café's e
+
+## finds-committed-document
+
+**Checks:**
+
+- PASS: agent opened its knowledge folder
+- PASS: read the expected document
+- PASS: introduces itself by first name
+- PASS: expected content present
+- PASS: ran on assigned model (opus)
+- PASS: evidence labels used
+
+**Answer (first 1,500 characters):**
+
+> Marcus, Lease Negotiation Specialist. Don't sign this as written. The file in my folder, `sample-brickell-lease.md`, is labeled fictional and for testing only, so I treat its terms as [UNVERIFIED].
+>
+> **Top three risks**
+>
+> 1. **🔴 Opening deadline and permit risk.** The offer requires opening within 120 days. There's no grease trap, and "permitted use" depends on landlord approval and permits. Our research budgets 9–15 months to open [ESTIMATE] (`09-risks.md`). That makes a default before opening likely. **Ask:** a permit contingency, a rent start date tied to the Certificate of Use, and the landlord paying for the grease trap or a written confirmation of what's required.
+> 2. **🔴 Rent is too high for likely sales.** Base rent of $78/sq ft on 1,200 sq ft is $93,600 a year. NNN adds about $15–$30/sq ft [ESTIMATE], for about $111.6k–$129.6k all-in. Our 10–12% occupancy rule [ESTIMATE] means you'd need roughly $930k–$1.3M a year in sales, with 3% increases on top. **Ask:** lower base rent, a cap on CAM increases, audit rights, and free rent during build-out.
+> 3. **🔴 Full personal guarantee and no exit.** You'd be personally liable for the whole term, with no early termination and a $0 TI allowance. **Ask:** a guarantee capped at 6–12 months of rent that burns off after 24 months, an exit or assignment right, and some TI or free rent.
+>
+> **Walk away** if the landlord refuses a permit contingency.
+>
+> **Handoffs:** the permit timeline and grease trap go to `permitting-zoning-expediter`. The r
