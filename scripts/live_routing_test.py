@@ -67,8 +67,11 @@ def _run_once(case):
         if ev.get("type") == "assistant":
             for c in ev["message"].get("content", []):
                 if c.get("type") == "tool_use" and c.get("name") in ("Agent", "Task"):
-                    called.append(c["input"].get("subagent_type"))
-                    tool_to_agent[c.get("id")] = c["input"].get("subagent_type")
+                    agent = c["input"].get("subagent_type") or ""
+                    if not agent or agent.startswith("__"):
+                        continue  # control calls (e.g. waiting on background agents), not experts
+                    called.append(agent)
+                    tool_to_agent[c.get("id")] = agent
             parent = ev.get("parent_tool_use_id")
             if parent and parent in tool_to_agent and ev["message"].get("model"):
                 models.setdefault(tool_to_agent[parent], set()).add(ev["message"]["model"])

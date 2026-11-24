@@ -2,16 +2,16 @@
 
 - **Run date:** 2026-11-24
 - **What was tested:** each prompt was sent to `orchestrator` **without naming any experts**. The four guide examples come from `docs/how-to-talk-to-your-experts.md` with their "Experts to involve" and "Order" lines removed. A fifth prompt describes a staffing problem without the word "barista".
-- **How:** `python3 scripts/live_routing_test.py` (Claude Code CLI, `--agent orchestrator`). "Experts called" lists the specialist subagents the orchestrator actually launched.
+- **How:** `python3 scripts/live_routing_test.py` (Claude Code CLI, `--agent orchestrator`). "Experts called" lists the specialist subagents the orchestrator actually launched, with the model each one actually ran on (checked against its `model:` field).
 - **Pass rule:** at least one expert from every required group was called, and the answer shows a routing decision, a combined recommendation, disagreements, and evidence labels.
 
 | Case | Result | Experts called | Required groups missing |
 |---|---|---|---|
-| Evaluating a commercial lease before signing | PASS | 6: `lease-negotiation-specialist`, `financial-modeling-funding-strategist`, `site-selection-real-estate-specialist`, `environmental-utility-compliance-specialist`, `permitting-zoning-expediter`, `design-buildout-project-manager` | none |
-| Startup budget and break-even plan | PASS | 5: `financial-modeling-funding-strategist`, `design-buildout-project-manager`, `environmental-utility-compliance-specialist`, `lease-negotiation-specialist`, `launch-program-director` | none |
-| Grand opening and marketing strategy | PASS | 7: `marketing-pr-launch-manager`, `social-media-community-manager`, `launch-program-director`, `cafe-operations-manager`, `head-of-coffee-beverage-program`, `technology-pos-data-specialist`, `financial-modeling-funding-strategist` | none |
-| Rising costs, staffing shortage, inventory waste, declining sales | PASS | 9: `cafe-operations-manager`, `employment-law-hr-compliance-specialist`, `talent-acquisition-training-manager`, `food-program-purchasing-manager`, `financial-modeling-funding-strategist`, `head-of-coffee-beverage-program`, `technology-pos-data-specialist`, `marketing-pr-launch-manager`, `customer-experience-service-design-lead` | none |
-| Staffing problem in different words (no 'barista') | PASS | 4: `talent-acquisition-training-manager`, `cafe-operations-manager`, `employment-law-hr-compliance-specialist`, `financial-modeling-funding-strategist` | none |
+| Evaluating a commercial lease before signing | PASS | 7: `site-selection-real-estate-specialist` (sonnet), `permitting-zoning-expediter` (opus), `environmental-utility-compliance-specialist` (opus), `design-buildout-project-manager` (sonnet), `financial-modeling-funding-strategist` (opus), `risk-insurance-hurricane-manager` (opus), `lease-negotiation-specialist` (opus) | none |
+| Startup budget and break-even plan | PASS | 5: `financial-modeling-funding-strategist` (opus), `design-buildout-project-manager` (sonnet), `lease-negotiation-specialist` (opus), `environmental-utility-compliance-specialist` (opus), `launch-program-director` (opus) | none |
+| Grand opening and marketing strategy | PASS | 6: `marketing-pr-launch-manager` (sonnet), `social-media-community-manager` (haiku), `launch-program-director` (opus), `cafe-operations-manager` (sonnet), `technology-pos-data-specialist` (sonnet), `head-of-coffee-beverage-program` (sonnet) | none |
+| Rising costs, staffing shortage, inventory waste, declining sales | PASS | 8: `cafe-operations-manager` (sonnet), `talent-acquisition-training-manager` (sonnet), `employment-law-hr-compliance-specialist` (opus), `food-program-purchasing-manager` (sonnet), `financial-modeling-funding-strategist` (opus), `technology-pos-data-specialist` (sonnet), `marketing-pr-launch-manager` (sonnet), `customer-experience-service-design-lead` (sonnet) | none |
+| Staffing problem in different words (no 'barista') | PASS | 5: `talent-acquisition-training-manager` (sonnet), `cafe-operations-manager` (sonnet), `employment-law-hr-compliance-specialist` (opus), `financial-modeling-funding-strategist` (opus), `customer-experience-service-design-lead` (sonnet) | none |
 
 **5/5 cases passed.**
 
@@ -33,6 +33,7 @@ What I want back: one combined recommendation (sign / counter / walk away), the 
 - PASS: disagreements addressed
 - PASS: evidence labels used
 - PASS: run completed without error
+- PASS: experts ran on their assigned models
 
 **Required groups (at least one from each):**
 
@@ -46,20 +47,21 @@ What I want back: one combined recommendation (sign / counter / walk away), the 
 
 > Routing decision
 >
-> | Problem identified | Experts chosen | Why |
+> I'm Ava, the Orchestrator. My knowledge folder (`knowledge/orchestrator/`) has only its README, so this answer uses the shared research in `docs/` (dated 2026-11-23). As you asked, each expert stayed under 200 words and used no web lookups.
+>
+> | Business problem | Experts | Why |
 > |---|---|---|
-> | Is the rent affordable for this business? | `financial-modeling-funding-strategist` | Rent as a share of sales, the rent we can afford, cash at risk before opening, and a lower-sales case |
-> | Is the LOI fair, and what do we counter? | `lease-negotiation-specialist` | Builds the counter term sheet and separates must-haves from items we can trade |
-> | Is this a good site at this price? | `site-selection-real-estate-specialist` | Compares the rent to Brickell market data, tests the $850k sales estimate, and sets the walk-away signal |
-> | Implied: does the "maybe" grease trap pass? | `environmental-utility-compliance-specialist` | Miami-Dade DERM grease permit (GDO), the existing trap, water/sewer charges and impact fees: the biggest unknown costs |
-> | Implied: can we get permits, and is 90 days enough? | `permitting-zoning-expediter` | Zoning, Certificate of Use, DBPR food-licence history, and the permit contingency clause |
-> | Implied: no TI allowance, so who pays for the build-out? | `design-buildout-project-manager` | Build-out cost and time, the TI amount to ask for, and what to check on a walkthrough |
+> | Is the rent affordable for $850k in sales? | `financial-modeling-funding-strategist` (Raymond), `site-selection-real-estate-specialist` (Andrés) | Checks the 10–12% occupancy rule and break-even, and compares the rent with the Brickell market |
+> | Can a café legally open here, and when? *(implied)* | `permitting-zoning-expediter` (Teresa) | Zoning and Certificate of Use must be checked before signing, and the timeline decides when rent should start |
+> | Is there a working grease trap? What will utility fees cost? *(implied)* | `environmental-utility-compliance-specialist` (Hector) | A former juice bar "may" have a trap. That uncertainty is a $0–$35k swing |
+> | No improvement money and rent starting at 90 days *(implied)* | `design-buildout-project-manager` (Nadia) | Build-out cost and timeline set how much improvement money and free rent to ask for |
+> | Flood risk and the lease's storm and insurance clauses *(implied)* | `risk-insurance-hurricane-manager` (Walter) | Damage and insurance clauses matter for 10 years in Brickell |
+> | Writing the counter-offer | `lease-negotiation-specialist` (Marcus) | Briefed last, with all the findings above |
 >
-> **Left out on purpose:** `risk-insurance-hurricane-manager` (flood zone is listed as an open question below), `market-customer-insights-analyst` (checking demand is a next step, not needed for this decision), `food-safety-licensing-specialist` (the permitting expert covered DBPR history), `entity-tax-bookkeeping-specialist` and `launch-program-director` (they wouldn't change the decision).
->
-> *Test-run limits: each brief and answer was kept short, and only `docs/` research was used, with no web lookups.*
->
-> ---
+> **Left out on purpose:**
+> - `market-customer-insights-analyst` and `competitive-intelligence-analyst`: I accepted your $850k estimate for now, but it's flagged in the open questions below.
+> - `food-safety-licensing-specialist`: the juice bar's food-licence history is listed as a check instead.
+> - `launch-program-director`: one leas
 
 ## Startup budget and break-even plan
 
@@ -79,6 +81,7 @@ What I want back: one combined budget with low/high cases and a contingency, the
 - PASS: disagreements addressed
 - PASS: evidence labels used
 - PASS: run completed without error
+- PASS: experts ran on their assigned models
 
 **Required groups (at least one from each):**
 
@@ -90,17 +93,16 @@ What I want back: one combined budget with low/high cases and a contingency, the
 
 > Routing decision
 >
-> | Business problem | Experts consulted | Why |
-> |---|---|---|
-> | Startup budget, funding gap, how much to borrow, break-even | `financial-modeling-funding-strategist` | Owns the budget, the loan size and the break-even model. |
-> | Build-out and equipment costs (the biggest swing) | `design-buildout-project-manager` | Low and high costs for design, construction and equipment, the contingency, and what can be leased. |
-> | Grease trap and water/sewer fees (the biggest unknown cost) | `environmental-utility-compliance-specialist` | How much to budget for the DERM grease trap and the water-department connection and impact fees. |
-> | Rent and lease terms that change how much cash you need | `lease-negotiation-specialist` | Total rent, the deposit, free rent and the landlord's build-out allowance. |
-> | 12-month opening, rent paid during delays, when to get the loan | `launch-program-director` | Timeline, a reserve for delays, the order of funding steps, and a go/no-go check. |
+> I'm Ava, the Orchestrator. My knowledge folder has only its README, so this answer uses the shared research in `docs/` (dated 2026-11-23). As you asked for this test run, every expert worked from `docs/` only, with no web lookups.
 >
-> Deliberately left out for this test run:
-> - **Site selection** (is the space already a café?), **permitting**, **tax and loan structure**, **insurance**, **head of coffee** (equipment spec) and **marketing.** The research's budget lines for these are carried as is, and these experts are named as owners in the next steps.
-> - **Gap:** the research covers City of Miami permit rules, not Coral Gables. Permitting is the first next step.
+> | Business problem | Experts and why |
+> |---|---|
+> | How much it costs to open, how much to borrow, and break-even | `financial-modeling-funding-strategist` (Raymond): leads the budget, loan sizing and break-even |
+> | Build-out and equipment, the biggest cost swing | `design-buildout-project-manager` (Nadia): cost ranges and contingency |
+> | Rent at $65 NNN: deposit, total rent cost, and terms that save cash | `lease-negotiation-specialist` (Marcus) |
+> | Grease trap, water and sewer connection, and impact fees (a hidden cost) | `environmental-utility-compliance-specialist` (Hector) |
+> | 12-month timeline, rent paid before opening, and when the loan must close | `launch-program-director` (Elena) |
+> | **Left out on purpose** | `permitting-zoning-expediter`: the research doesn't cover Coral Gables permit rules, so this becomes a next step. `entity-tax-bookkeeping-specialist`, `risk-insurance-hurricane-manager`, `head-of-coffee-beverage-program`: their lines are small or already in the `docs/04` model. `market-customer-insights-analyst`: needed next, to test whether the sales assumptions are realistic. |
 
 ## Grand opening and marketing strategy
 
@@ -120,6 +122,7 @@ What I want back: one combined week-by-week launch plan, the opening-day promoti
 - PASS: disagreements addressed
 - PASS: evidence labels used
 - PASS: run completed without error
+- PASS: experts ran on their assigned models
 
 **Required groups (at least one from each):**
 
@@ -132,22 +135,23 @@ What I want back: one combined week-by-week launch plan, the opening-day promoti
 
 > Routing decision
 >
-> | Business problem | Experts | Why |
+> | Problem identified | Experts chosen | Why |
 > |---|---|---|
-> | Launch plan, opening promotion, PR calendar | `marketing-pr-launch-manager` | Owns the launch countdown and promotions |
-> | Growing Instagram from zero, Google/Apple Maps, reviews, local creators | `social-media-community-manager` | The account has almost no followers |
-> | Choosing the opening date when inspections or licences could slip | `launch-program-director` | You can't promote an opening before the café has its final inspection, occupancy certificate and licences |
-> | Handling the opening and Art Basel crowds | `cafe-operations-manager` | Required for any opening-day plan; also sets limits on giveaways |
-> | Which drinks to feature, and a smaller menu for the rush | `head-of-coffee-beverage-program` | Your concept is built on the drinks |
-> | Measuring results (POS discount buttons, loyalty sign-up, codes) | `technology-pos-data-specialist` | You asked how results will be measured |
-> | Is $15k enough, how to split it, how much free product you can afford | `financial-modeling-funding-strategist` | Checks the money side |
+> | Launch marketing plan, promotion, and $15k budget | `marketing-pr-launch-manager` (Valentina) | Owns the launch countdown, press, promotion design, and budget |
+> | Starting from almost no Instagram followers; local discovery | `social-media-community-manager` (Gabriel) | Instagram/TikTok, Google and Apple Maps, creators, reviews |
+> | Opening date must not get ahead of licences and inspections (implied) | `launch-program-director` (Elena) | Go/no-go gates; risk of the date slipping |
+> | Handling the opening-day and Art Week rush (implied) | `cafe-operations-manager` (Luis) | Staffing, limits on the promotion, labor and COGS control |
+> | "How we'll measure results" | `technology-pos-data-specialist` (Kevin) | Promo codes, tracking which channel works, a 90-day dashboard |
+> | What we promote and photograph | `head-of-coffee-beverage-program` (Mateo) | Hero drinks, which drinks are fast enough for the promo, roaster tie-in |
 >
 > **Left out on purpose:**
-> - `concept-brand-strategist`: the concept is already set.
-> - `talent-acquisition-training-manager`: operations covered rush staffing. It's listed as a handoff for hiring.
-> - `food-safety-licensing-specialist` and `permitting-zoning-expediter`: their licences and inspections are covered as opening checkpoints by the Launch Director. They own those tasks in the next steps.
-> - `customer-experience-service-design-lead`: it's a later handoff for review themes.
-> - `competitive-intelligence-analyst`: optional.
+> - **Finance (Raymond):** the budget is already set. Checking promo cost goes into Next steps.
+> - **Concept/brand (Camila):** the concept is already defined.
+> - **Customer experience (Sofia):** Luis and Gabriel cover rush service and reviews.
+> - **Food safety (Patricia) and permitting (Teresa):** Elena's gates cover them at planning level. Their checks are in Open questions.
+> - **Insurance (Walter):** crowd safety is passed to him as a next step.
+> - **Coffee sourcing (Lucía):** the roaster deal is a next step.
+> - **Competitive intelligence and market insights:** they wouldn't change this plan.
 
 ## Rising costs, staffing shortage, inventory waste, declining sales
 
@@ -167,6 +171,7 @@ What I want back: one combined 30-day action plan in priority order, what each f
 - PASS: disagreements addressed
 - PASS: evidence labels used
 - PASS: run completed without error
+- PASS: experts ran on their assigned models
 
 **Required groups (at least one from each):**
 
@@ -181,16 +186,22 @@ What I want back: one combined 30-day action plan in priority order, what each f
 
 > Routing decision
 >
-> | Problem I found | Experts consulted | Why |
-> |---|---|---|
-> | Labor at 38% of sales | `cafe-operations-manager`, `financial-modeling-funding-strategist` | Matching schedules to sales by hour, and showing what each fix is worth in dollars |
-> | Two baristas quit (turnover) | `talent-acquisition-training-manager`, `employment-law-hr-compliance-specialist` | Whether to replace both now, and the overtime and wage rules once 4 people cover 6 people's shifts (cutting hours raises legal issues even though you didn't ask about them) |
-> | Milk and cups cost more | `food-program-purchasing-manager`, `head-of-coffee-beverage-program` | Rebidding vendors and cutting cup sizes, plus drink costs, price increases and a simpler menu |
-> | Pastries thrown away daily | `food-program-purchasing-manager`, `cafe-operations-manager`, `technology-pos-data-specialist` | Daily order levels, a waste routine, and the POS sales data to set them |
-> | Sales down 22% (summer slump) | `technology-pos-data-specialist`, `marketing-pr-launch-manager`, `customer-experience-service-design-lead` | Finding out whether fewer people are coming or each spends less, cheap promotions for locals, and whether slow service is driving regulars away |
-> | Cash through hurricane season (you didn't raise this, but it's July) | `financial-modeling-funding-strategist` | How much cash to hold in reserve |
+> Ava, Orchestrator. No additional documents have been provided in `knowledge/orchestrator/`; this answer uses the shared research in `docs/` (research date 2026-11-23). Per your test-run rules, there were no web lookups and each brief and answer was kept short.
 >
-> **Left out on purpose:** coffee-sourcing (you didn't mention bean costs); social-media (marketing covers it, and they own replying to reviews); risk-insurance (cash reserve covered here, and they still need to confirm your hurricane deductible); food-safety (only needed for the pastry-donation question, listed under open questions); site and lease (rent can't change within 30 days); competitive-intel and entity
+> | Problem identified | Experts consulted | Why |
+> |---|---|---|
+> | Labor too high (38% of sales against a 30% target) | `cafe-operations-manager` (Luis), `financial-modeling-funding-strategist` (Raymond) | Building the schedule from hourly sales, and the dollar value of each fix |
+> | Two baristas quit (staff turnover) | `talent-acquisition-training-manager` (Jasmine), `employment-law-hr-compliance-specialist` (Jonathan) | Whether to backfill, how to keep the four who remain, and the wage-and-hour risk of cutting hours or adding overtime |
+> | Milk and cup costs went up; pastries thrown out daily | `food-program-purchasing-manager` (Rosa) | Par levels, re-bidding vendors, and the cost-of-goods impact |
+> | Sales down 22% | `technology-pos-data-specialist` (Kevin), `marketing-pr-launch-manager` (Valentina) | Working out whether the drop is seasonal, lost regulars, or smaller tickets, plus low-cost ways to win sales back |
+> | Risk that cuts hurt service (not stated, but implied) | `customer-experience-service-design-lead` (Sofia) | Sets a floor so cost cuts don't lose more regulars |
+> | Summer cash and hurricane season (implied) | Covered by Raymond | Not worth a separate risk brief for a 30-day plan |
+>
+> **Left out on purpose:**
+> - `head-of-coffee-beverage-program`: menu and cup-size cuts are given to them as a handoff.
+> - `social-media-community-manager`: their part runs through Valentina's plan.
+> - `competitive-intelligence-analyst`: no sign that a competitor caused the drop.
+> - `risk-insurance-hurricane-manag
 
 ## Staffing problem in different words (no 'barista')
 
@@ -208,6 +219,7 @@ We run a small café in Little Havana. Employee turnover is brutal: three people
 - PASS: disagreements addressed
 - PASS: evidence labels used
 - PASS: run completed without error
+- PASS: experts ran on their assigned models
 
 **Required groups (at least one from each):**
 
@@ -219,11 +231,14 @@ We run a small café in Little Havana. Employee turnover is brutal: three people
 
 > Routing decision
 >
-> | Problem identified | Experts chosen | Why |
+> | Problem | Experts | Why |
 > |---|---|---|
-> | Few good applicants, and people keep leaving | `talent-acquisition-training-manager` | Owns pay positioning, hiring channels, onboarding and keeping staff |
-> | Weekends are always short-staffed | `cafe-operations-manager` | Owns scheduling, cross-training, bench staff and the labor % target |
-> | Implied: pay raises, weekend premiums, tips, overtime on cover shifts, TPS and I-9 | `employment-law-hr-compliance-specialist` | Every likely fix changes pay or hiring, so it has to stay legal |
-> | Implied: can you afford to pay more? | `financial-modeling-funding-strategist` | Compares the cost of losing people with the cost of a raise |
+> | People are quitting and good applicants are scarce | `talent-acquisition-training-manager` (Jasmine) | Pay range, job posts, where to recruit, training path |
+> | Weekends are short-staffed | `cafe-operations-manager` (Luis) | Weekend schedule, minimum staffing, labor-hours budget |
+> | Implied: pay raises, weekend premiums, overtime, hiring paperwork | `employment-law-hr-compliance-specialist` (Jonathan) | The likely fixes raise wage, tip, I-9 and immigration-status (TPS) questions |
+> | Implied: what a raise costs | `financial-modeling-funding-strategist` (Raymond) | Whether the café can afford to pay more |
+> | Implied: weekend service and reviews are slipping | `customer-experience-service-design-lead` (Sofia) | Protect guests and reviews while the team is thin |
 >
-> **Left out on purpose:** `customer-experience-service-design-lead`, because you didn't mention service complaints. `technology-pos-data-specialist`, because operations covered sales-per-hour scheduling. Marketing, site and permit experts aren't relevant here. Test-run limits were followed: short briefs, docs/ only, no web lookups.
+> **Left out on purpose:**
+> - `head-of-coffee-beverage-program` and `technology-pos-data-specialist`: a shorter weekend menu and scheduling from sales data come up below as next steps, but their input wouldn't change today's recommendation.
+> - Marketing and growth experts: not relevant to this problem.
