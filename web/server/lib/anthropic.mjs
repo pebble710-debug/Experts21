@@ -19,16 +19,17 @@ export function modelIdFor(alias, env = process.env) {
   return override || DEFAULT_MODEL_IDS[alias] || DEFAULT_MODEL_IDS.sonnet;
 }
 
-export function makeClient(env = process.env) {
-  return new Anthropic({
-    apiKey: env.ANTHROPIC_API_KEY,
-    maxRetries: 1,
-    timeout: 55_000, // stay inside the Netlify streaming-function limit
-  });
+export function makeClient(env = process.env, { timeoutMs = 240_000 } = {}) {
+  // Claude calls run inside the background worker (15-minute platform limit), never
+  // inside a synchronous request, so a generous per-call timeout is safe here.
+  return new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 2, timeout: timeoutMs });
 }
 
 /** Map SDK errors to stable app error codes + friendly messages. */
 export function describeApiError(err) {
+  if (err instanceof Anthropic.APIUserAbortError || err?.name === "AbortError") {
+    return { code: "job_deadline", status: 504, message: "The experts took longer than the time limit for one question. Try a narrower question." };
+  }
   if (err instanceof Anthropic.AuthenticationError) {
     return { code: "invalid_api_key", status: 502, message: "The Anthropic API rejected the server's API key. Check ANTHROPIC_API_KEY in your Netlify environment variables." };
   }
@@ -78,7 +79,8 @@ function requestParams({ modelId, system, messages, maxTokens, effort, outputFor
  */
 export async function* streamClaude(client, opts) {
   const params = requestParams(opts);
-  const stream = params.betas ? client.beta.messages.stream(params) : client.messages.stream(params);
+  const reqOpts = opts.signal ? { signal: opts.signal } : undefined; // lets the worker stop at its deadline
+  const stream = params.betas ? client.beta.messages.stream(params, reqOpts) : client.messages.stream(params, reqOpts);
   let text = "";
   for await (const event of stream) {
     if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {

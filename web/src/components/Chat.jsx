@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Avatar, ErrorNote, Markdown, ModelBadge } from "./common.jsx";
+import { Avatar, ErrorNote, Markdown, ModelBadge, Progress } from "./common.jsx";
 import TeamRun from "./TeamRun.jsx";
 
 export function Composer({ onSend, disabled, maxChars, placeholder }) {
@@ -81,7 +81,13 @@ export function ExpertChat({ agent, messages, busy, onRetry }) {
                 {m.meta?.model && <span className="muted small"> · {m.meta.model}</span>}
                 {m.streaming && <span className="typing" aria-label="typing">●●●</span>}
               </div>
-              {m.content ? <Markdown>{m.content}</Markdown> : m.streaming && <p className="muted">Thinking…</p>}
+              {m.content && <Markdown>{m.content}</Markdown>}
+              <Progress
+                label={m.stage === "queued" ? `Starting ${agent.firstName}…` : m.content ? `${agent.firstName} is writing…` : `${agent.firstName} is thinking…`}
+                since={m.startedAt}
+                active={Boolean(m.streaming)}
+                connection={m.connection}
+              />
               {m.truncated && <p className="note">This answer reached the length limit and was cut off.</p>}
               {m.refusal && <p className="note">{m.refusal}</p>}
               {m.error && <ErrorNote error={m.error} onRetry={!busy && i === messages.length - 1 ? onRetry : null} />}

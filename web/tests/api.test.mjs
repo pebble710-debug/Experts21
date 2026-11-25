@@ -1,10 +1,17 @@
-// Tests for the Netlify Function handler, using the real @anthropic-ai/sdk against a
+// Tests for the job-based API: the synchronous handler (/api/config, /api/auth, /api/jobs)
+// and the background worker (/api/run-job), using the real @anthropic-ai/sdk against a
 // local mock of the Anthropic Messages API (no real API key or network needed).
-import { after, before, describe, test } from "node:test";
+import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import Anthropic from "@anthropic-ai/sdk";
 import teamData from "../server/_generated/team-data.mjs";
-import { createHandler } from "../server/lib/handler.mjs";
+import { createHandler, createWorker } from "../server/lib/handler.mjs";
+import { createFileStore, createMemoryStore } from "../server/lib/store.mjs";
+import { STALE_MS, publicView } from "../server/lib/jobs.mjs";
+import { expertSystemPrompt } from "../server/lib/prompts.mjs";
 import { startMockAnthropic } from "./helpers/mock-anthropic.mjs";
 
 let mock;
@@ -12,346 +19,368 @@ before(async () => {
   mock = await startMockAnthropic();
 });
 after(async () => mock.close());
+beforeEach(() => {
+  mock.state.requests.length = 0;
+  mock.state.mode = "ok";
+  mock.state.delayMs = 0;
+  mock.state.failFor = null;
+  mock.state.maxActive = 0;
+});
 
 const quiet = { error: () => {} };
-function makeHandler(env = {}) {
-  return createHandler({
-    data: teamData,
-    env: { ANTHROPIC_API_KEY: "sk-ant-test-key", ...env },
-    clientFactory: (e) => new Anthropic({ apiKey: e.ANTHROPIC_API_KEY, baseURL: mock.url, maxRetries: 0 }),
-    logger: quiet,
-  });
+
+function makeApp(env = {}, store = createMemoryStore()) {
+  const fullEnv = { ANTHROPIC_API_KEY: "sk-ant-test-key", RATE_LIMIT_PER_HOUR: "1000", ...env };
+  const getStore = async () => store;
+  const clientFactory = (e, { timeoutMs } = {}) =>
+    new Anthropic({ apiKey: e.ANTHROPIC_API_KEY, baseURL: mock.url, maxRetries: 0, timeout: timeoutMs });
+  return {
+    store,
+    handle: createHandler({ data: teamData, env: fullEnv, getStore, logger: quiet }),
+    work: createWorker({ data: teamData, env: fullEnv, getStore, clientFactory, logger: quiet }),
+  };
 }
 
-const post = (path, body, headers = {}) =>
-  new Request(`http://localhost${path}`, {
-    method: "POST",
+const req = (method, p, body, headers = {}) =>
+  new Request(`http://localhost${p}`, {
+    method,
     headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body),
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
 
-async function events(res) {
-  const text = await res.text();
-  return text.trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
-}
-
-const ask = (agent, content = "What are the top three risks in the Brickell lease?") => ({
+const expertJob = (agent, content = "What are the top three risks in the Brickell lease?") => ({
+  kind: "expert",
   agent,
   messages: [{ role: "user", content }],
 });
+const QUESTION = "We found a Brickell space at $78/sq ft NNN with no grease trap. Should we sign?";
+
+/** Create a job, run the background worker, return the final public status. */
+async function runToCompletion(app, body, headers = {}, ctx = {}) {
+  const created = await app.handle(req("POST", "/api/jobs", body, headers), ctx);
+  assert.equal(created.status, 202, `create job: ${await created.clone().text()}`);
+  const job = await created.json();
+  const workRes = await app.work(req("POST", "/api/run-job", { jobId: job.jobId, runToken: job.runToken }, headers));
+  const result = await workRes.json();
+  const status = await app.handle(req("GET", `/api/jobs/${job.jobId}?token=${encodeURIComponent(job.pollToken)}`, undefined, headers));
+  assert.equal(status.status, 200);
+  return { job, result, view: await status.json() };
+}
 
 describe("GET /api/config", () => {
-  test("reports missing API key and password requirement without revealing them", async () => {
-    const h = createHandler({ data: teamData, env: {}, logger: quiet });
-    const body = await (await h(new Request("http://localhost/api/config"))).json();
+  test("reports missing key / password requirement without revealing them", async () => {
+    const h = createHandler({ data: teamData, env: {}, getStore: async () => createMemoryStore(), logger: quiet });
+    const body = await (await h(req("GET", "/api/config"))).json();
     assert.equal(body.apiKeyConfigured, false);
     assert.equal(body.passwordRequired, false);
     assert.equal(body.experts, 26);
-
-    const h2 = makeHandler({ APP_PASSWORD: "hunter2-secret" });
-    const res = await h2(new Request("http://localhost/api/config"));
-    const text = await res.text();
+    const app = makeApp({ APP_PASSWORD: "hunter2-secret" });
+    const text = await (await app.handle(req("GET", "/api/config"))).text();
     assert.equal(JSON.parse(text).passwordRequired, true);
-    assert.equal(JSON.parse(text).apiKeyConfigured, true);
-    assert.ok(!text.includes("hunter2-secret") && !text.includes("sk-ant-test-key"), "config must not leak secrets");
+    assert.ok(!text.includes("hunter2-secret") && !text.includes("sk-ant-test-key"));
   });
 });
 
-describe("configuration errors", () => {
-  test("missing ANTHROPIC_API_KEY returns 503 missing_api_key with a helpful message", async () => {
-    const h = createHandler({ data: teamData, env: {}, logger: quiet });
-    const res = await h(post("/api/expert", ask("lease-negotiation-specialist")));
+describe("synchronous endpoints never wait on Claude (cannot hit the platform time limit)", () => {
+  test("POST /api/jobs returns 202 quickly and makes no Claude call", async () => {
+    mock.state.delayMs = 5000; // even with a very slow model
+    const app = makeApp();
+    const t0 = Date.now();
+    const res = await app.handle(req("POST", "/api/jobs", { kind: "team", question: QUESTION }));
+    assert.equal(res.status, 202);
+    assert.ok(Date.now() - t0 < 500, "job creation is fast");
+    assert.equal(mock.state.requests.length, 0, "no Claude call in the synchronous request");
+    const job = await res.json();
+    const poll = await app.handle(req("GET", `/api/jobs/${job.jobId}?token=${encodeURIComponent(job.pollToken)}`));
+    assert.equal((await poll.json()).status, "queued");
+  });
+});
+
+describe("configuration and upstream errors", () => {
+  test("missing ANTHROPIC_API_KEY -> 503 missing_api_key", async () => {
+    const h = createHandler({ data: teamData, env: {}, getStore: async () => createMemoryStore(), logger: quiet });
+    const res = await h(req("POST", "/api/jobs", expertJob("lease-negotiation-specialist")));
     assert.equal(res.status, 503);
     const body = await res.json();
     assert.equal(body.error.code, "missing_api_key");
     assert.match(body.error.message, /Netlify/);
   });
 
-  test("an invalid key reported by the API surfaces as invalid_api_key in the stream", async () => {
+  test("a rejected key makes the job fail with invalid_api_key (no secret in the message)", async () => {
     mock.state.mode = "auth_error";
-    try {
-      const res = await makeHandler()(post("/api/expert", ask("cafe-operations-manager")));
-      const ev = await events(res);
-      const err = ev.find((e) => e.type === "error");
-      assert.equal(err.code, "invalid_api_key");
-    } finally {
-      mock.state.mode = "ok";
-    }
+    const { view } = await runToCompletion(makeApp(), expertJob("cafe-operations-manager"));
+    assert.equal(view.status, "failed");
+    assert.equal(view.error.code, "invalid_api_key");
+    assert.ok(!JSON.stringify(view).includes("sk-ant-test-key"));
   });
 
-  test("upstream overload surfaces as upstream_error", async () => {
+  test("an overloaded API makes an expert job fail with upstream_error", async () => {
     mock.state.mode = "overloaded";
-    try {
-      const ev = await events(await makeHandler()(post("/api/expert", ask("cafe-operations-manager"))));
-      assert.equal(ev.find((e) => e.type === "error").code, "upstream_error");
-    } finally {
-      mock.state.mode = "ok";
-    }
+    const { view } = await runToCompletion(makeApp(), expertJob("cafe-operations-manager"));
+    assert.equal(view.error.code, "upstream_error");
+  });
+
+  test("the job deadline stops runaway work with job_deadline", async () => {
+    mock.state.delayMs = 1500;
+    const { view } = await runToCompletion(makeApp({ JOB_DEADLINE_MS: "300" }), expertJob("cafe-operations-manager"));
+    assert.equal(view.status, "failed");
+    assert.equal(view.error.code, "job_deadline");
   });
 });
 
 describe("APP_PASSWORD authentication", () => {
-  const h = makeHandler({ APP_PASSWORD: "correct horse" });
-  test("no password -> 401", async () => {
-    const res = await h(post("/api/expert", ask("lease-negotiation-specialist")));
-    assert.equal(res.status, 401);
-    assert.equal((await res.json()).error.code, "unauthorized");
+  const PW = { "x-app-password": "correct horse" };
+  test("job creation requires the password (checked before validation)", async () => {
+    const app = makeApp({ APP_PASSWORD: "correct horse" });
+    assert.equal((await app.handle(req("POST", "/api/jobs", expertJob("lease-negotiation-specialist")))).status, 401);
+    assert.equal((await app.handle(req("POST", "/api/jobs", expertJob("lease-negotiation-specialist"), { "x-app-password": "wrong" }))).status, 401);
+    assert.equal((await app.handle(req("POST", "/api/jobs", { agent: "nope" }))).status, 401);
+    assert.equal((await app.handle(req("POST", "/api/jobs", expertJob("lease-negotiation-specialist"), PW))).status, 202);
   });
-  test("wrong password -> 401", async () => {
-    const res = await h(post("/api/expert", ask("lease-negotiation-specialist"), { "x-app-password": "wrong" }));
-    assert.equal(res.status, 401);
-  });
-  test("password is checked before input validation (no info leak)", async () => {
-    const res = await h(post("/api/expert", { agent: "nope" }));
-    assert.equal(res.status, 401);
-  });
-  test("correct password -> 200 stream", async () => {
-    const res = await h(post("/api/expert", ask("lease-negotiation-specialist"), { "x-app-password": "correct horse" }));
-    assert.equal(res.status, 200);
-    assert.ok((await events(res)).some((e) => e.type === "done"));
+  test("status polling and the background worker require the password too", async () => {
+    const app = makeApp({ APP_PASSWORD: "correct horse" });
+    const job = await (await app.handle(req("POST", "/api/jobs", expertJob("cafe-operations-manager"), PW))).json();
+    const url = `/api/jobs/${job.jobId}?token=${encodeURIComponent(job.pollToken)}`;
+    assert.equal((await app.handle(req("GET", url))).status, 401);
+    const w = await app.work(req("POST", "/api/run-job", { jobId: job.jobId, runToken: job.runToken }));
+    assert.equal(w.status, 401);
+    assert.equal(mock.state.requests.length, 0, "unauthenticated worker call did no Claude work");
+    assert.equal((await (await app.handle(req("GET", url, undefined, PW))).json()).status, "queued");
   });
   test("/api/auth validates the password server-side", async () => {
-    assert.equal((await h(post("/api/auth", {}, { "x-app-password": "wrong" }))).status, 401);
-    assert.equal((await h(post("/api/auth", {}, { "x-app-password": "correct horse" }))).status, 200);
+    const app = makeApp({ APP_PASSWORD: "correct horse" });
+    assert.equal((await app.handle(req("POST", "/api/auth", {}, { "x-app-password": "wrong" }))).status, 401);
+    assert.equal((await app.handle(req("POST", "/api/auth", {}, PW))).status, 200);
+    assert.equal((await makeApp().handle(req("POST", "/api/auth", {}))).status, 200);
   });
-  test("no APP_PASSWORD configured -> open access", async () => {
-    const res = await makeHandler()(post("/api/auth", {}));
-    assert.equal(res.status, 200);
+});
+
+describe("job tokens and worker safety", () => {
+  test("poll token is required and bound to the job", async () => {
+    const app = makeApp();
+    const a = await (await app.handle(req("POST", "/api/jobs", expertJob("cafe-operations-manager")))).json();
+    const b = await (await app.handle(req("POST", "/api/jobs", expertJob("cafe-operations-manager")))).json();
+    assert.equal((await app.handle(req("GET", `/api/jobs/${a.jobId}`))).status, 403);
+    assert.equal((await app.handle(req("GET", `/api/jobs/${a.jobId}?token=${encodeURIComponent(b.pollToken)}`))).status, 403);
+    assert.equal((await app.handle(req("GET", "/api/jobs/not-a-real-id?token=x"))).status, 404);
+  });
+  test("a bad run token runs nothing; a duplicate worker call does not re-run the job", async () => {
+    const app = makeApp();
+    const job = await (await app.handle(req("POST", "/api/jobs", expertJob("cafe-operations-manager")))).json();
+    const bad = await (await app.work(req("POST", "/api/run-job", { jobId: job.jobId, runToken: "forged" }))).json();
+    assert.equal(bad.ran, false);
+    assert.equal(mock.state.requests.length, 0);
+    const first = await (await app.work(req("POST", "/api/run-job", { jobId: job.jobId, runToken: job.runToken }))).json();
+    const second = await (await app.work(req("POST", "/api/run-job", { jobId: job.jobId, runToken: job.runToken }))).json();
+    assert.equal(first.ran, true);
+    assert.equal(second.ran, false);
+    assert.equal(mock.state.requests.length, 1, "exactly one Claude call");
+  });
+  test("stale or never-started jobs are reported as failed with a clear code", () => {
+    const now = Date.now();
+    const running = { id: "x", status: "running", updatedAt: now - STALE_MS - 1, createdAt: now - 300_000, input: {} };
+    assert.equal(publicView(running, now).error.code, "job_stalled");
+    const queued = { id: "y", status: "queued", updatedAt: now - 200_000, createdAt: now - 200_000, input: {} };
+    assert.equal(publicView(queued, now).error.code, "job_not_started");
+  });
+  test("the status view never returns the stored conversation", async () => {
+    const { view } = await runToCompletion(makeApp(), expertJob("cafe-operations-manager", "secret-ish question text"));
+    assert.ok(!JSON.stringify(view).includes("secret-ish question text"));
   });
 });
 
 describe("request limits", () => {
-  test("per-IP rate limit returns 429 with retry-after", async () => {
-    const h = makeHandler({ RATE_LIMIT_PER_HOUR: "2" });
+  test("rate limit charges a whole-team job for all of its Claude calls", async () => {
+    const app = makeApp({ RATE_LIMIT_PER_HOUR: "8", MAX_TEAM_EXPERTS: "5" }); // team job costs 5 + 2 = 7
     const ctx = { ip: "203.0.113.7" };
-    for (let i = 0; i < 2; i++) {
-      const res = await h(post("/api/expert", ask("cafe-operations-manager")), ctx);
-      assert.equal(res.status, 200);
-      await res.text();
-    }
-    const res = await h(post("/api/expert", ask("cafe-operations-manager")), ctx);
+    assert.equal((await app.handle(req("POST", "/api/jobs", { kind: "team", question: QUESTION }), ctx)).status, 202);
+    assert.equal((await app.handle(req("POST", "/api/jobs", expertJob("cafe-operations-manager")), ctx)).status, 202); // 8th call
+    const res = await app.handle(req("POST", "/api/jobs", expertJob("cafe-operations-manager")), ctx);
     assert.equal(res.status, 429);
     assert.ok(Number(res.headers.get("retry-after")) > 0);
     assert.equal((await res.json()).error.code, "rate_limited");
-    // a different IP is not affected
-    const other = await h(post("/api/expert", ask("cafe-operations-manager")), { ip: "198.51.100.1" });
-    assert.equal(other.status, 200);
-    await other.text();
+    assert.equal((await app.handle(req("POST", "/api/jobs", expertJob("cafe-operations-manager")), { ip: "198.51.100.1" })).status, 202);
   });
-  test("too-long question -> 400 too_long", async () => {
-    const res = await makeHandler()(post("/api/expert", ask("cafe-operations-manager", "x".repeat(2001))));
-    assert.equal(res.status, 400);
-    assert.equal((await res.json()).error.code, "too_long");
+  test("input validation", async () => {
+    const app = makeApp();
+    const code = async (body) => (await (await app.handle(req("POST", "/api/jobs", body))).json()).error?.code;
+    assert.equal(await code(expertJob("cafe-operations-manager", "x".repeat(2001))), "too_long");
+    assert.equal(await code({ kind: "team", question: "x".repeat(2001) }), "too_long");
+    assert.equal(await code(expertJob("made-up-expert")), "unknown_agent");
+    assert.equal(await code(expertJob("orchestrator")), "use_team");
+    assert.equal(await code({ kind: "other" }), "bad_request");
+    assert.equal(await code({ kind: "expert", agent: "cafe-operations-manager", messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "yo" }] }), "bad_request");
+    assert.equal((await app.handle(req("POST", "/api/jobs", { kind: "team", pad: "x".repeat(250_000) }))).status, 413);
   });
-  test("oversized body -> 413", async () => {
-    const res = await makeHandler()(post("/api/expert", { agent: "cafe-operations-manager", pad: "x".repeat(250_000) }));
-    assert.equal(res.status, 413);
-  });
-  test("unknown agent -> 404; orchestrator must use the team endpoint", async () => {
-    assert.equal((await makeHandler()(post("/api/expert", ask("made-up-expert")))).status, 404);
-    const res = await makeHandler()(post("/api/expert", ask("orchestrator")));
-    assert.equal(res.status, 400);
-    assert.equal((await res.json()).error.code, "use_team_endpoint");
-  });
-  test("conversation must end with a user message", async () => {
-    const res = await makeHandler()(post("/api/expert", {
-      agent: "cafe-operations-manager",
-      messages: [{ role: "user", content: "hi" }, { role: "assistant", content: "hello" }],
-    }));
-    assert.equal(res.status, 400);
-  });
-  test("history is capped and max_tokens is bounded", async () => {
-    mock.state.requests.length = 0;
+  test("history is capped and output tokens are bounded", async () => {
+    const app = makeApp();
     const messages = [];
     for (let i = 0; i < 20; i++) messages.push({ role: i % 2 ? "assistant" : "user", content: `turn ${i}` });
     messages.push({ role: "user", content: "latest question" });
-    const res = await makeHandler()(post("/api/expert", { agent: "cafe-operations-manager", messages }));
-    await res.text();
+    await runToCompletion(app, { kind: "expert", agent: "cafe-operations-manager", messages });
     const sent = mock.state.requests.at(-1).body;
-    assert.ok(sent.messages.length <= 8, `sent ${sent.messages.length} messages`);
+    assert.ok(sent.messages.length <= 8);
     assert.equal(sent.messages[0].role, "user");
-    assert.equal(sent.messages.at(-1).content, "latest question");
-    assert.ok(sent.max_tokens <= 4000);
+    assert.match(sent.messages.at(-1).content, /^latest question/);
+    assert.match(sent.messages.at(-1).content, /Answer guidance/);
+    assert.equal(sent.max_tokens, 3000);
+  });
+  test("old streaming endpoints are gone; wrong methods are rejected", async () => {
+    const app = makeApp();
+    assert.equal((await app.handle(req("POST", "/api/expert", expertJob("cafe-operations-manager")))).status, 404);
+    assert.equal((await app.handle(req("POST", "/api/team/route", { question: QUESTION }))).status, 404);
+    assert.equal((await app.handle(req("GET", "/api/jobs"))).status, 405);
   });
 });
 
-describe("individual expert path", () => {
-  test("Marcus (lease, opus) gets his agent file, skills, knowledge folder incl. the lease, and research", async () => {
-    mock.state.requests.length = 0;
-    const res = await makeHandler()(post("/api/expert", ask("lease-negotiation-specialist")));
-    const ev = await events(res);
-    const meta = ev.find((e) => e.type === "meta");
-    assert.equal(meta.firstName, "Marcus");
-    assert.equal(meta.model, "opus");
-    assert.equal(meta.modelId, "claude-opus-5-5");
-    const answer = ev.filter((e) => e.type === "delta").map((e) => e.text).join("");
-    assert.match(answer, /Marcus here\. MOCK ANSWER from claude-opus-5-5/);
-    assert.match(answer, /knowledge\/lease-negotiation-specialist\/sample-brickell-lease\.md/);
-    const done = ev.find((e) => e.type === "done");
-    assert.equal(done.stopReason, "end_turn");
-    assert.equal(done.signature, undefined, "individual answers are not team contributions");
+describe("prompt size (smaller, faster requests without losing expert knowledge)", () => {
+  test("expert prompts stay under ~17k tokens and exclude planning meta-docs and URL lists", () => {
+    for (const a of teamData.agents.filter((x) => x.slug !== "orchestrator")) {
+      const sys = expertSystemPrompt(a, teamData);
+      assert.ok(sys.length / 4 < 17_000, `${a.slug}: ~${Math.round(sys.length / 4)} tokens`);
+      assert.ok(!sys.includes("Coverage matrix"), `${a.slug} includes the planning roster`);
+      assert.ok(!sys.includes("\n## Sources\n"), `${a.slug} includes a URL source list`);
+      assert.ok(sys.includes(`.claude/agents/${a.slug}.md`) && sys.includes(`knowledge/${a.slug}/README.md`), a.slug);
+      for (const s of a.skills) assert.ok(sys.includes(`BEGIN SKILL ${s}`), `${a.slug} missing skill ${s}`);
+      for (const r of a.research) assert.ok(sys.includes(`BEGIN FILE ${r}`), `${a.slug} missing research ${r}`);
+    }
+  });
+});
 
-    const req = mock.state.requests.at(-1);
-    const sys = req.body.system[0].text;
-    assert.equal(req.body.model, "claude-opus-5-5");
-    assert.deepEqual(req.body.system[0].cache_control, { type: "ephemeral" });
-    assert.match(sys, /# Lease Negotiation Specialist \(A08\)/, "agent definition included");
-    assert.match(sys, /- \*\*Name:\*\* Marcus/, "persona included");
-    assert.match(sys, /BEGIN SKILL lease-permit-contingency-review/, "preloaded skill included");
-    assert.match(sys, /Base rent: \$78 per square foot/, "knowledge document content included");
-    assert.match(sys, /BEGIN FILE docs\/05-operating-costs\.md/, "research included");
-    assert.match(sys, /Never invent regulatory requirements/, "CLAUDE.md ground rules included");
-    assert.equal(req.body.output_config.effort, "medium");
-    assert.equal(req.body.fallbacks, "default", "refusal fallback enabled for Opus 5.5");
-    assert.match(String(req.headers["anthropic-beta"]), /server-side-fallback-2026-07-01/);
-    // SDK 1.x sends the key as "Authorization: Bearer <key>" (older SDKs used x-api-key).
-    const sentKey = req.headers["x-api-key"] ?? String(req.headers.authorization ?? "").replace(/^Bearer /, "");
-    assert.equal(sentKey, "sk-ant-test-key", "key is sent only server -> Anthropic");
+describe("individual expert jobs", () => {
+  test("Marcus (lease, opus) gets his agent file, skills, knowledge incl. the lease, and research", async () => {
+    const { view } = await runToCompletion(makeApp(), expertJob("lease-negotiation-specialist"));
+    assert.equal(view.status, "done");
+    assert.equal(view.kind, "expert");
+    assert.equal(view.answer.modelId, "claude-opus-5-5");
+    assert.match(view.answer.text, /Marcus here\. MOCK ANSWER from claude-opus-5-5/);
+    assert.match(view.answer.text, /knowledge\/lease-negotiation-specialist\/sample-brickell-lease\.md/);
+    const r = mock.state.requests.at(-1);
+    const sys = r.body.system[0].text;
+    assert.equal(r.body.model, "claude-opus-5-5");
+    assert.deepEqual(r.body.system[0].cache_control, { type: "ephemeral" });
+    assert.match(sys, /# Lease Negotiation Specialist \(A08\)/);
+    assert.match(sys, /- \*\*Name:\*\* Marcus/);
+    assert.match(sys, /BEGIN SKILL lease-permit-contingency-review/);
+    assert.match(sys, /Base rent: \$78 per square foot/);
+    assert.match(sys, /BEGIN FILE docs\/05-operating-costs\.md/);
+    assert.match(sys, /# Team directory/);
+    assert.match(sys, /Never invent regulatory requirements/);
+    assert.equal(r.body.output_config.effort, "medium");
+    assert.equal(r.body.fallbacks, "default");
+    assert.match(String(r.headers["anthropic-beta"]), /server-side-fallback-2026-07-01/);
+    const sentKey = r.headers["x-api-key"] ?? String(r.headers.authorization ?? "").replace(/^Bearer /, "");
+    assert.equal(sentKey, "sk-ant-test-key");
   });
 
-  test("Diego (haiku) uses claude-haiku-5-5, no fallback beta, and his README-only folder", async () => {
-    mock.state.requests.length = 0;
-    const ev = await events(await makeHandler()(post("/api/expert", ask("competitive-intelligence-analyst"))));
-    assert.equal(ev.find((e) => e.type === "meta").modelId, "claude-haiku-5-5");
-    const req = mock.state.requests.at(-1);
-    assert.equal(req.body.model, "claude-haiku-5-5");
-    assert.equal(req.body.fallbacks, undefined);
-    assert.match(req.body.system[0].text, /contains ONLY README\.md - no additional documents have been provided/);
+  test("Diego (haiku) uses claude-haiku-5-5, no fallback beta, README-only folder", async () => {
+    const { view } = await runToCompletion(makeApp(), expertJob("competitive-intelligence-analyst"));
+    assert.equal(view.answer.modelId, "claude-haiku-5-5");
+    const r = mock.state.requests.at(-1);
+    assert.equal(r.body.fallbacks, undefined);
+    assert.match(r.body.system[0].text, /contains ONLY README\.md - no additional documents have been provided/);
   });
 
-  test("every one of the 25 directly-askable agents maps to the right model and persona", async () => {
-    const h = makeHandler({ RATE_LIMIT_PER_HOUR: "1000" });
+  test("all 25 directly-askable agents run on their assigned model with their own prompt", async () => {
+    const app = makeApp();
     const ids = { opus: "claude-opus-5-5", sonnet: "claude-sonnet-5-5", haiku: "claude-haiku-5-5" };
     for (const a of teamData.agents.filter((x) => x.slug !== "orchestrator")) {
-      mock.state.requests.length = 0;
-      const ev = await events(await h(post("/api/expert", ask(a.slug, "Briefly, who are you?"))));
-      const meta = ev.find((e) => e.type === "meta");
-      assert.equal(meta.firstName, a.firstName, a.slug);
+      const { view } = await runToCompletion(app, expertJob(a.slug, "Briefly, who are you?"));
+      assert.equal(view.status, "done", a.slug);
+      assert.ok(view.answer.text.startsWith(`${a.firstName} here`), a.slug);
       assert.equal(mock.state.requests.at(-1).body.model, ids[a.model], a.slug);
-      assert.ok(mock.state.requests.at(-1).body.system[0].text.includes(`.claude/agents/${a.slug}.md`), a.slug);
     }
   });
 
-  test("model IDs can be overridden per family with MODEL_* env vars", async () => {
-    mock.state.requests.length = 0;
-    const res = await makeHandler({ MODEL_SONNET: "claude-sonnet-5" })(post("/api/expert", ask("cafe-operations-manager")));
-    await res.text();
+  test("MODEL_* env vars override the model per family", async () => {
+    await runToCompletion(makeApp({ MODEL_SONNET: "claude-sonnet-5" }), expertJob("cafe-operations-manager"));
     assert.equal(mock.state.requests.at(-1).body.model, "claude-sonnet-5");
   });
 });
 
-describe("whole-team (orchestrator) path", () => {
-  const question = "We found a Brickell space at $78/sq ft NNN with no grease trap. Should we sign?";
+describe("whole-team jobs (real multi-expert coordination)", () => {
+  test("Ava routes -> 3 specialists answer concurrently -> Ava combines their real answers", async () => {
+    mock.state.delayMs = 300;
+    const t0 = Date.now();
+    const { view } = await runToCompletion(makeApp(), { kind: "team", question: QUESTION });
+    const elapsed = Date.now() - t0;
+    assert.equal(view.status, "done", JSON.stringify(view.error));
+    assert.equal(view.stage, "done");
 
-  async function routeOnce(h) {
-    const ev = await events(await h(post("/api/team/route", { question })));
-    return ev.find((e) => e.type === "plan");
-  }
+    const kinds = mock.state.requests.map((r) =>
+      r.body.output_config?.format ? "route" : /SYNTHESIS STAGE/.test(r.body.system[0].text) ? "synth" : "expert");
+    assert.deepEqual(kinds, ["route", "expert", "expert", "expert", "synth"]);
+    assert.ok(mock.state.maxActive >= 3, `specialists ran concurrently (peak ${mock.state.maxActive})`);
+    assert.ok(elapsed < 300 * 5, `parallel run took ${elapsed} ms`);
 
-  test("route -> experts -> synthesize performs real, verified multi-expert coordination", async () => {
-    const h = makeHandler({ RATE_LIMIT_PER_HOUR: "100" });
-    mock.state.requests.length = 0;
+    // 1. Routing: Ava on Opus with structured output and the meaning-based routing rules
+    const route = mock.state.requests[0];
+    assert.equal(route.body.model, "claude-opus-5-5");
+    assert.equal(route.body.output_config.format.type, "json_schema");
+    assert.equal(route.body.output_config.format.schema.properties.experts.items.properties.agent.enum.length, 24);
+    assert.match(route.body.system[0].text, /ROUTING STAGE/);
+    assert.match(route.body.system[0].text, /Route by meaning, not by keywords/);
+    assert.ok(!route.body.system[0].text.includes("## Combined answer format"), "routing prompt trimmed");
+    const agents = view.plan.experts.map((e) => e.agent);
+    assert.deepEqual(agents, ["lease-negotiation-specialist", "financial-modeling-funding-strategist", "environmental-utility-compliance-specialist"]);
+    assert.ok(view.plan.problems.some((p) => p.implied));
 
-    // 1. Routing: Ava (opus) returns a structured plan; server filters + signs it.
-    const planEv = await routeOnce(h);
-    assert.ok(planEv, "plan event returned");
-    const routeReq = mock.state.requests.at(-1);
-    assert.equal(routeReq.body.model, "claude-opus-5-5");
-    assert.equal(routeReq.body.output_config.format.type, "json_schema");
-    assert.ok(routeReq.body.output_config.format.schema.properties.experts.items.properties.agent.enum.length === 24);
-    assert.match(routeReq.body.system[0].text, /ROUTING STAGE/);
-    assert.match(routeReq.body.system[0].text, /Route by meaning, not by keywords/);
-    const agents = planEv.plan.experts.map((e) => e.agent);
-    assert.deepEqual(agents, [
-      "lease-negotiation-specialist",
-      "financial-modeling-funding-strategist",
-      "environmental-utility-compliance-specialist",
-    ], "duplicates and non-specialists removed");
-    assert.ok(planEv.planSignature);
-
-    // 2. Each expert answers in its own Claude call with its own model and prompt.
-    const contributions = [];
-    for (const agent of agents) {
-      const ev = await events(await h(post("/api/expert", {
-        agent, team: { question, plan: planEv.plan, planSignature: planEv.planSignature },
-      })));
-      const answer = ev.filter((e) => e.type === "delta").map((e) => e.text).join("");
-      const done = ev.find((e) => e.type === "done");
-      assert.ok(done.signature, `${agent} answer signed`);
-      const req = mock.state.requests.at(-1);
-      assert.match(req.body.system[0].text, /one of several experts consulted by Ava/);
-      assert.match(req.body.messages[0].content, /Ava's brief for you/);
-      contributions.push({ agent, answer, signature: done.signature });
+    // 2. Each specialist answered with its own prompt and Ava's brief
+    for (const a of agents) {
+      assert.equal(view.experts[a].status, "done");
+      assert.match(view.experts[a].text, /MOCK ANSWER from claude-opus-5-5/);
     }
-    const models = mock.state.requests.slice(-3).map((r) => r.body.model);
-    assert.deepEqual(models, ["claude-opus-5-5", "claude-opus-5-5", "claude-opus-5-5"]);
+    const expertReqs = mock.state.requests.slice(1, 4);
+    for (const r of expertReqs) assert.match(r.body.messages[0].content, /Ava's brief for you/);
+    const sysOf = (name) => expertReqs.find((r) => r.body.system[0].text.includes(`- **Name:** ${name}`));
+    assert.ok(sysOf("Marcus") && sysOf("Raymond") && sysOf("Hector"), "three different expert prompts");
 
-    // 3. Synthesis: Ava combines only the verified answers.
-    const synthEv = await events(await h(post("/api/team/synthesize", {
-      question, plan: planEv.plan, planSignature: planEv.planSignature, contributions,
-    })));
-    const meta = synthEv.find((e) => e.type === "meta");
-    assert.deepEqual(meta.contributors, agents);
-    const final = synthEv.filter((e) => e.type === "delta").map((e) => e.text).join("");
-    assert.match(final, /^## Routing decision/);
-    assert.match(final, /combining 3 experts/);
-    const synthReq = mock.state.requests.at(-1);
-    assert.match(synthReq.body.system[0].text, /SYNTHESIS STAGE/);
-    for (const c of contributions) assert.ok(synthReq.body.messages[0].content.includes(c.answer), "real answer passed verbatim");
-    assert.deepEqual(synthEv.find((e) => e.type === "done").contributors, agents);
+    // 3. Synthesis received the real answers verbatim
+    const synth = mock.state.requests[4];
+    assert.match(synth.body.system[0].text, /SYNTHESIS STAGE/);
+    assert.ok(!synth.body.system[0].text.includes("## Route by meaning"), "synthesis prompt trimmed");
+    for (const a of agents) assert.ok(synth.body.messages[0].content.includes(view.experts[a].text));
+    assert.match(view.final.text, /^## Routing decision/);
+    assert.match(view.final.text, /combining 3 experts/);
+    assert.deepEqual(view.final.contributors, agents);
   });
 
-  test("synthesis rejects a fabricated or edited expert answer", async () => {
-    const h = makeHandler({ RATE_LIMIT_PER_HOUR: "100" });
-    const planEv = await routeOnce(h);
-    const agent = planEv.plan.experts[0].agent;
-    const ev = await events(await h(post("/api/expert", { agent, team: { question, plan: planEv.plan, planSignature: planEv.planSignature } })));
-    const answer = ev.filter((e) => e.type === "delta").map((e) => e.text).join("");
-    const signature = ev.find((e) => e.type === "done").signature;
-
-    const tampered = await h(post("/api/team/synthesize", {
-      question, plan: planEv.plan, planSignature: planEv.planSignature,
-      contributions: [{ agent, answer: answer + " (edited)", signature }],
-    }));
-    assert.equal(tampered.status, 400);
-    assert.equal((await tampered.json()).error.code, "unverified_contribution");
-
-    const fake = await h(post("/api/team/synthesize", {
-      question, plan: planEv.plan, planSignature: planEv.planSignature,
-      contributions: [{ agent, answer: "I made this up", signature: "not-a-signature" }],
-    }));
-    assert.equal(fake.status, 400);
+  test("one specialist failing does not sink the team; Ava combines the others and notes the gap", async () => {
+    mock.state.failFor = "Raymond";
+    const { view } = await runToCompletion(makeApp(), { kind: "team", question: QUESTION });
+    assert.equal(view.status, "done");
+    assert.equal(view.experts["financial-modeling-funding-strategist"].status, "failed");
+    assert.equal(view.experts["financial-modeling-funding-strategist"].error.code, "upstream_error");
+    assert.deepEqual(view.final.contributors, ["lease-negotiation-specialist", "environmental-utility-compliance-specialist"]);
+    assert.match(mock.state.requests.at(-1).body.messages[0].content, /\[No answer: this expert's request failed/);
   });
 
-  test("a forged plan or an expert outside the plan is rejected", async () => {
-    const h = makeHandler({ RATE_LIMIT_PER_HOUR: "100" });
-    const planEv = await routeOnce(h);
-    const forged = { ...planEv.plan, experts: [...planEv.plan.experts, { agent: "growth-expansion-strategist", reason: "x", brief: "x" }] };
-    const r1 = await h(post("/api/expert", { agent: "growth-expansion-strategist", team: { question, plan: forged, planSignature: planEv.planSignature } }));
-    assert.equal(r1.status, 400);
-    assert.equal((await r1.json()).error.code, "invalid_plan");
-    const r2 = await h(post("/api/expert", { agent: "growth-expansion-strategist", team: { question, plan: planEv.plan, planSignature: planEv.planSignature } }));
-    assert.equal(r2.status, 400);
-    assert.equal((await r2.json()).error.code, "not_in_plan");
+  test("team size is capped by MAX_TEAM_EXPERTS", async () => {
+    const { view } = await runToCompletion(makeApp({ MAX_TEAM_EXPERTS: "2" }), { kind: "team", question: QUESTION });
+    assert.equal(view.plan.experts.length, 2);
   });
 
-  test("the team size is capped by MAX_TEAM_EXPERTS", async () => {
-    const h = makeHandler({ MAX_TEAM_EXPERTS: "2" });
-    const planEv = await routeOnce(h);
-    assert.equal(planEv.plan.experts.length, 2);
-  });
-
-  test("synthesis with no contributions is rejected", async () => {
-    const h = makeHandler();
-    const planEv = await routeOnce(h);
-    const res = await h(post("/api/team/synthesize", { question, plan: planEv.plan, planSignature: planEv.planSignature, contributions: [] }));
-    assert.equal(res.status, 400);
-    assert.equal((await res.json()).error.code, "no_contributions");
+  test("progress is saved while a job runs (status endpoint shows the stage)", async () => {
+    mock.state.delayMs = 2600; // longer than the 2 s heartbeat
+    const app = makeApp();
+    const job = await (await app.handle(req("POST", "/api/jobs", { kind: "team", question: QUESTION }))).json();
+    const running = app.work(req("POST", "/api/run-job", { jobId: job.jobId, runToken: job.runToken }));
+    await new Promise((r) => setTimeout(r, 1000));
+    const mid = await (await app.handle(req("GET", `/api/jobs/${job.jobId}?token=${encodeURIComponent(job.pollToken)}`))).json();
+    assert.equal(mid.status, "running");
+    assert.equal(mid.stage, "routing");
+    mock.state.delayMs = 0;
+    await running;
   });
 });
 
-test("unknown endpoints and wrong methods", async () => {
-  const h = makeHandler();
-  assert.equal((await h(new Request("http://localhost/api/nope"))).status, 404);
-  assert.equal((await h(new Request("http://localhost/api/expert"))).status, 405);
+test("file store shares jobs across separate instances (no in-memory state)", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "experts21-store-"));
+  const a = makeApp({}, createFileStore(dir));
+  const b = makeApp({}, createFileStore(dir)); // a different "instance"
+  const job = await (await a.handle(req("POST", "/api/jobs", expertJob("cafe-operations-manager")))).json();
+  await b.work(req("POST", "/api/run-job", { jobId: job.jobId, runToken: job.runToken }));
+  const view = await (await a.handle(req("GET", `/api/jobs/${job.jobId}?token=${encodeURIComponent(job.pollToken)}`))).json();
+  assert.equal(view.status, "done");
+  fs.rmSync(dir, { recursive: true, force: true });
 });

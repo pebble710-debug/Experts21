@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import data from "./generated/experts.json";
-import { ApiError, getConfig, getPassword, runTeam, setPassword, streamRequest } from "./api.js";
+import { ApiError, getConfig, getPassword, pollJob, setPassword, startJob } from "./api.js";
 import Sidebar from "./components/Sidebar.jsx";
 import ExpertProfile from "./components/ExpertProfile.jsx";
 import PasswordGate from "./components/PasswordGate.jsx";
@@ -49,44 +49,55 @@ export default function App() {
 
   const updateChat = (slug, fn) => setChats((c) => ({ ...c, [slug]: fn(c[slug] ?? []) }));
 
-  const askExpert = async (slug, history) => {
+  // One expert: a background job; the answer text arrives through polling.
+  const askExpert = async (slug, history, resumeJob = null) => {
     setBusy(true);
     const controller = new AbortController();
     abortRef.current = controller;
-    updateChat(slug, () => [...history, { role: "assistant", content: "", streaming: true }]);
+    updateChat(slug, () => [...history, { role: "assistant", content: "", streaming: true, stage: "queued", startedAt: Date.now() }]);
     const patchLast = (patch) =>
       updateChat(slug, (msgs) => {
         const copy = [...msgs];
-        const last = copy[copy.length - 1];
-        copy[copy.length - 1] = { ...last, ...(typeof patch === "function" ? patch(last) : patch) };
+        copy[copy.length - 1] = { ...copy[copy.length - 1], ...patch };
         return copy;
       });
     try {
-      await streamRequest(
-        "/api/expert",
-        { agent: slug, messages: history.map(({ role, content }) => ({ role, content })) },
-        {
-          password,
-          signal: controller.signal,
-          onEvent: (ev) => {
-            if (ev.type === "meta") patchLast({ meta: ev });
-            if (ev.type === "delta") patchLast((m) => ({ content: m.content + ev.text }));
-            if (ev.type === "refusal") patchLast({ refusal: ev.message });
-            if (ev.type === "done") patchLast((m) => ({ meta: { ...m.meta, model: ev.model }, truncated: ev.truncated }));
-          },
+      const job =
+        resumeJob ??
+        (await startJob(
+          { kind: "expert", agent: slug, messages: history.map(({ role, content }) => ({ role, content })) },
+          { password, signal: controller.signal },
+        ));
+      patchLast({ job });
+      await pollJob(job, {
+        password,
+        signal: controller.signal,
+        onUpdate: (view, { connection }) => {
+          if (!view) return patchLast({ connection });
+          const a = view.answer;
+          patchLast({
+            connection,
+            stage: view.stage,
+            startedAt: view.createdAt,
+            content: a?.text ?? "",
+            meta: a ? { model: a.servedModel || a.modelId } : null,
+            truncated: Boolean(a?.truncated),
+            refusal: a?.refusal ?? null,
+          });
         },
-      );
-      patchLast({ streaming: false });
+      });
+      patchLast({ streaming: false, connection: "ok" });
     } catch (err) {
       if (err?.name === "AbortError") return;
       handleAuthError(err);
-      patchLast({ streaming: false, error: toError(err) });
+      patchLast({ streaming: false, connection: "ok", error: toError(err), resumeJob: err.job ?? null });
     } finally {
       setBusy(false);
     }
   };
 
-  const askTeam = async (question, index) => {
+  // Whole team: one background job (Ava routes -> specialists answer -> Ava combines).
+  const askTeam = async (question, index, resumeJob = null) => {
     setBusy(true);
     const controller = new AbortController();
     abortRef.current = controller;
@@ -96,16 +107,20 @@ export default function App() {
         copy[index] = { ...copy[index], ...patch };
         return copy;
       });
+    setRun({ error: null, resumeJob: null, startedAt: Date.now() });
     try {
-      await runTeam(question, {
+      const job = resumeJob ?? (await startJob({ kind: "team", question }, { password, signal: controller.signal }));
+      setRun({ job });
+      await pollJob(job, {
         password,
         signal: controller.signal,
-        onUpdate: (state) => setRun({ state }),
+        onUpdate: (view, { connection }) => setRun(view ? { view, connection } : { connection }),
       });
+      setRun({ connection: "ok" });
     } catch (err) {
       if (err?.name === "AbortError") return;
       handleAuthError(err);
-      setRun({ error: toError(err) });
+      setRun({ error: toError(err), resumeJob: err.job ?? null, connection: "ok", ...(err.view ? { view: err.view } : {}) });
     } finally {
       setBusy(false);
     }
@@ -114,7 +129,7 @@ export default function App() {
   const send = (text) => {
     if (isTeam) {
       const index = runs.length;
-      setRuns((rs) => [...rs, { question: text, state: null, error: null }]);
+      setRuns((rs) => [...rs, { question: text, view: null, error: null }]);
       askTeam(text, index);
     } else {
       const history = [...(chats[selected] ?? []).filter((m) => !m.error && !m.streaming), { role: "user", content: text }];
@@ -122,15 +137,19 @@ export default function App() {
     }
   };
 
+  // Retry: if the connection was lost, resume the same job (no new charge); otherwise ask again.
   const retry = () => {
     if (isTeam) {
       const index = runs.length - 1;
-      setRuns((rs) => rs.map((r, i) => (i === index ? { ...r, state: null, error: null } : r)));
-      askTeam(runs[index].question, index);
+      const run = runs[index];
+      if (run.resumeJob) return askTeam(run.question, index, run.resumeJob);
+      setRuns((rs) => rs.map((r, i) => (i === index ? { ...r, view: null, error: null } : r)));
+      askTeam(run.question, index);
     } else {
       const msgs = chats[selected] ?? [];
+      const last = msgs[msgs.length - 1];
       const history = msgs.filter((m) => !m.error && !m.streaming && !(m.role === "assistant" && !m.content));
-      if (history.length && history[history.length - 1].role === "user") askExpert(selected, history);
+      if (history.length && history[history.length - 1].role === "user") askExpert(selected, history, last?.resumeJob ?? null);
     }
   };
 

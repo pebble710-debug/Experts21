@@ -98,7 +98,16 @@ try {
   mock.state.requests.length = 0;
   await page.getByTestId("composer-input").fill("We found a Brickell space at $78/sq ft NNN with no grease trap. Should we sign?");
   await page.getByTestId("send").click();
-  await page.getByTestId("contributors").waitFor({ timeout: 20000 });
+  // Slow model: each Claude call takes 2.5 s, so the whole run takes several polls.
+  mock.state.delayMs = 2500;
+  await page.getByTestId("progress").waitFor({ timeout: 10000 });
+  const progressText = await page.getByTestId("progress").innerText();
+  check("progress indicator shows the current stage and elapsed time", /Ava|Starting|Specialists/.test(progressText) && /\d:\d\d/.test(progressText), progressText);
+  await page.getByTestId("routing-plan").waitFor({ timeout: 20000 });
+  check("routing plan appears while specialists are still answering", (await page.getByTestId("contributors").count()) === 0);
+  await page.getByTestId("contributors").waitFor({ timeout: 60000 });
+  mock.state.delayMs = 0;
+  check("slow whole-team run completes with no time-limit error", (await page.getByText("incomplete_response").count()) === 0);
   const plan = await page.getByTestId("routing-plan").innerText();
   check("routing plan shows the problems the orchestrator identified", /Grease-trap compliance/.test(plan) && /implied/.test(plan));
   const cards = await page.locator('[data-testid^="contribution-"]').count();

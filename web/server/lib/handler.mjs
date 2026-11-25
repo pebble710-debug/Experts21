@@ -1,31 +1,17 @@
-// Request handling for /api/* (framework-free: takes a web Request, returns a Response,
-// so the same code runs in Netlify Functions, the local server, and the tests).
-import { describeApiError, makeClient, modelIdFor, streamClaude } from "./anthropic.mjs";
-import {
-  checkPassword,
-  createRateLimiter,
-  hashText,
-  limitsFrom,
-  sign,
-  verify,
-} from "./security.mjs";
-import {
-  ORCHESTRATOR,
-  expertSystemPrompt,
-  indexAgents,
-  routePlanSchema,
-  routeSystemPrompt,
-  synthesisSystemPrompt,
-  synthesisUserMessage,
-  teamExpertUserMessage,
-} from "./prompts.mjs";
+// HTTP handling for /api/* (framework-free: web Request in, Response out, so the same
+// code runs in Netlify Functions, the local server, and the tests).
+//
+// Synchronous endpoints answer in milliseconds and never call Claude:
+//   GET  /api/config            key configured? password required? limits
+//   POST /api/auth              check APP_PASSWORD
+//   POST /api/jobs              validate + rate-limit + store a job -> 202 { jobId, pollToken, runToken }
+//   GET  /api/jobs/:id?token=   job status, progress and partial/final text (from storage)
+// The Claude work runs in the background function POST /api/run-job (see createWorker).
+import { checkPassword, createRateLimiter, limitsFrom } from "./security.mjs";
+import { ORCHESTRATOR, indexAgents } from "./prompts.mjs";
+import { checkPollToken, newJob, pollToken, publicView, runJob, runToken } from "./jobs.mjs";
 
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
-const NDJSON_HEADERS = {
-  "content-type": "application/x-ndjson; charset=utf-8",
-  "cache-control": "no-store",
-  "x-content-type-options": "nosniff",
-};
 
 class HttpError extends Error {
   constructor(status, code, message, extra = {}) {
@@ -41,25 +27,6 @@ const json = (status, body, headers = {}) =>
 const errorResponse = (e) =>
   json(e.status, { error: { code: e.code, message: e.message, ...e.extra } },
     e.extra?.retryAfter ? { "retry-after": String(e.extra.retryAfter) } : {});
-
-function ndjson(events, log) {
-  const enc = new TextEncoder();
-  const body = new ReadableStream({
-    async start(controller) {
-      const send = (ev) => controller.enqueue(enc.encode(JSON.stringify(ev) + "\n"));
-      try {
-        for await (const ev of events) send(ev);
-      } catch (err) {
-        const d = err instanceof HttpError ? { code: err.code, message: err.message } : describeApiError(err);
-        log("stream error", d.code, err?.status ?? "", err?.message ?? "");
-        send({ type: "error", code: d.code, message: d.message });
-      } finally {
-        controller.close();
-      }
-    },
-  });
-  return new Response(body, { status: 200, headers: NDJSON_HEADERS });
-}
 
 function clientIp(req, ctx) {
   return (
@@ -93,8 +60,7 @@ function validateHistory(messages, limits) {
     throw new HttpError(400, "bad_request", `"messages" must be a non-empty array.`);
   }
   const recent = messages.slice(-limits.maxHistoryMessages);
-  // The conversation sent to Claude must start with a user turn.
-  while (recent.length && recent[0].role !== "user") recent.shift();
+  while (recent.length && recent[0].role !== "user") recent.shift(); // must start with a user turn
   let total = 0;
   const out = [];
   for (const [i, m] of recent.entries()) {
@@ -114,9 +80,9 @@ function validateHistory(messages, limits) {
   return out;
 }
 
-export function createHandler({ data, env = process.env, clientFactory = makeClient, logger = console } = {}) {
-  const { bySlug, specialists } = indexAgents(data);
-  const specialistSlugs = specialists.map((a) => a.slug);
+/** Synchronous API handler. `getStore` returns the persistent job store. */
+export function createHandler({ data, env = process.env, getStore, logger = console } = {}) {
+  const { bySlug } = indexAgents(data);
   const rateLimiter = createRateLimiter();
   const authLimiter = createRateLimiter();
   const log = (...args) => logger.error?.("[experts21]", ...args);
@@ -127,182 +93,62 @@ export function createHandler({ data, env = process.env, clientFactory = makeCli
     }
   }
 
-  // Runs after input validation, right before a billable Claude call.
-  function guard(req, ctx, limits) {
+  // Runs after input validation, right before work that will be billed.
+  function guard(req, ctx, limits, cost) {
     if (!env.ANTHROPIC_API_KEY) {
       throw new HttpError(503, "missing_api_key",
         "The server has no ANTHROPIC_API_KEY. Add it in Netlify: Site configuration > Environment variables, then redeploy.");
     }
-    const r = rateLimiter(clientIp(req, ctx), limits);
+    const r = rateLimiter(clientIp(req, ctx), limits, Date.now(), cost);
     if (!r.ok) {
       throw new HttpError(429, "rate_limited",
         r.scope === "global"
           ? "This site has reached its hourly request limit. Please try again later."
-          : `You've reached the limit of ${limits.rateLimitPerHour} expert requests per hour. Please try again later.`,
+          : `You've reached the hourly limit of ${limits.rateLimitPerHour} expert calls (a whole-team question uses up to ${limits.maxTeamExperts + 2}). Please try again later.`,
         { retryAfter: r.retryAfter });
     }
   }
 
-  // ---------------------------------------------------------------- POST /api/expert
-  async function expert(req, ctx, limits) {
+  async function createJob(req, ctx, limits) {
     const body = await readJson(req, limits);
-    const slug = requireString(body.agent, "agent", 100);
-    const agent = bySlug.get(slug);
-    if (!agent) throw new HttpError(404, "unknown_agent", `No expert named "${slug}".`);
-    if (slug === ORCHESTRATOR) {
-      throw new HttpError(400, "use_team_endpoint", "Ava (orchestrator) answers through Ask the Whole Team.");
-    }
-    let messages;
-    let teamInfo = null;
-    if (body.team) {
-      const { question, plan, planSignature } = body.team;
-      requireString(question, "team.question", limits.maxQuestionChars);
-      if (!plan || !verify(env, { kind: "plan", questionHash: hashText(question), plan }, planSignature)) {
-        throw new HttpError(400, "invalid_plan", "The team plan is missing or was not issued by this server.");
+    let job;
+    if (body.kind === "team") {
+      const question = requireString(body.question, "question", limits.maxQuestionChars);
+      guard(req, ctx, limits, limits.maxTeamExperts + 2);
+      job = newJob("team", { question });
+    } else if (body.kind === "expert") {
+      const slug = requireString(body.agent, "agent", 100);
+      if (!bySlug.has(slug)) throw new HttpError(404, "unknown_agent", `No expert named "${slug}".`);
+      if (slug === ORCHESTRATOR) {
+        throw new HttpError(400, "use_team", "Ava (orchestrator) answers through Ask the Whole Team.");
       }
-      const entry = plan.experts.find((e) => e.agent === slug);
-      if (!entry) throw new HttpError(400, "not_in_plan", `${slug} is not part of this team plan.`);
-      messages = [{ role: "user", content: teamExpertUserMessage(question, entry.brief) }];
-      teamInfo = { questionHash: hashText(question) };
+      const messages = validateHistory(body.messages, limits);
+      guard(req, ctx, limits, 1);
+      job = newJob("expert", { agent: slug, messages });
     } else {
-      messages = validateHistory(body.messages, limits);
+      throw new HttpError(400, "bad_request", `"kind" must be "expert" or "team".`);
     }
-    guard(req, ctx, limits);
-
-    const modelId = modelIdFor(agent.model, env);
-    const client = clientFactory(env);
-    const system = expertSystemPrompt(agent, data, teamInfo ? "team" : "individual");
-    async function* run() {
-      yield { type: "meta", agent: slug, firstName: agent.firstName, title: agent.title, model: agent.model, modelId };
-      let final;
-      for await (const ev of streamClaude(client, {
-        modelId, system, messages, maxTokens: limits.expertMaxTokens, effort: "medium",
-      })) {
-        if (ev.type === "delta") yield ev;
-        else final = ev;
-      }
-      if (final.stopReason === "refusal") {
-        yield { type: "refusal", message: "Claude declined to answer this request.", category: final.stopDetails?.category ?? null };
-      }
-      const done = {
-        type: "done",
-        stopReason: final.stopReason,
-        model: final.model,
-        fallbackUsed: final.fallbackUsed,
-        usage: final.usage,
-        truncated: final.stopReason === "max_tokens",
-      };
-      if (teamInfo && final.stopReason !== "refusal" && final.text.trim()) {
-        done.signature = sign(env, { kind: "expert", agent: slug, questionHash: teamInfo.questionHash, answerHash: hashText(final.text) });
-      }
-      yield done;
-    }
-    return ndjson(run(), log);
+    const store = await getStore();
+    await store.set(job.id, job);
+    return json(202, {
+      jobId: job.id,
+      kind: job.kind,
+      pollToken: pollToken(env, job.id),
+      runToken: runToken(env, job.id),
+    });
   }
 
-  // ---------------------------------------------------------------- POST /api/team/route
-  async function route(req, ctx, limits) {
-    const body = await readJson(req, limits);
-    const question = requireString(body.question, "question", limits.maxQuestionChars);
-    guard(req, ctx, limits);
-    const ava = bySlug.get(ORCHESTRATOR);
-    const modelId = modelIdFor(ava.model, env);
-    const client = clientFactory(env);
-    async function* run() {
-      yield { type: "meta", stage: "route", agent: ORCHESTRATOR, firstName: ava.firstName, model: ava.model, modelId };
-      let final;
-      for await (const ev of streamClaude(client, {
-        modelId,
-        system: routeSystemPrompt(data, limits.maxTeamExperts),
-        messages: [{ role: "user", content: `Owner's question:\n\n${question}` }],
-        maxTokens: limits.routeMaxTokens,
-        effort: "medium",
-        outputFormat: { type: "json_schema", schema: routePlanSchema(specialistSlugs) },
-      })) {
-        if (ev.type === "final") final = ev;
-        else yield { type: "progress" }; // keep the connection visibly alive
-      }
-      if (final.stopReason === "refusal") throw new HttpError(422, "refusal", "Claude declined to route this question.");
-      let raw;
-      try {
-        raw = JSON.parse(final.text);
-      } catch {
-        throw new HttpError(502, "bad_plan", "The orchestrator returned an unreadable routing plan. Please try again.");
-      }
-      const seen = new Set();
-      const experts = (raw.experts ?? [])
-        .filter((e) => specialistSlugs.includes(e.agent) && !seen.has(e.agent) && seen.add(e.agent))
-        .slice(0, limits.maxTeamExperts)
-        .map((e) => ({ agent: e.agent, reason: String(e.reason ?? ""), brief: String(e.brief ?? "") }));
-      if (!experts.length) throw new HttpError(502, "empty_plan", "The orchestrator did not select any experts. Try rephrasing the question.");
-      const plan = {
-        problems: (raw.problems ?? []).map((p) => ({ problem: String(p.problem ?? ""), implied: Boolean(p.implied) })),
-        experts,
-        left_out: (raw.left_out ?? []).filter((e) => specialistSlugs.includes(e.agent))
-          .map((e) => ({ agent: e.agent, reason: String(e.reason ?? "") })),
-        assumptions: String(raw.assumptions ?? ""),
-      };
-      const signature = sign(env, { kind: "plan", questionHash: hashText(question), plan });
-      yield { type: "plan", plan, planSignature: signature, model: final.model, usage: final.usage };
+  async function getJob(req, id, url) {
+    if (!/^[0-9a-f-]{36}$/.test(id)) throw new HttpError(404, "job_not_found", "Unknown job.");
+    if (!checkPollToken(env, id, url.searchParams.get("token"))) {
+      throw new HttpError(403, "forbidden", "This job belongs to another session.");
     }
-    return ndjson(run(), log);
+    const store = await getStore();
+    const job = await store.get(id);
+    if (!job) throw new HttpError(404, "job_not_found", "This job was not found. It may have expired; please ask again.");
+    return json(200, publicView(job));
   }
 
-  // ---------------------------------------------------------------- POST /api/team/synthesize
-  async function synthesize(req, ctx, limits) {
-    const body = await readJson(req, limits);
-    const question = requireString(body.question, "question", limits.maxQuestionChars);
-    const { plan, planSignature } = body;
-    if (!plan || !verify(env, { kind: "plan", questionHash: hashText(question), plan }, planSignature)) {
-      throw new HttpError(400, "invalid_plan", "The team plan is missing or was not issued by this server.");
-    }
-    const planAgents = new Set(plan.experts.map((e) => e.agent));
-    const contributions = [];
-    for (const c of Array.isArray(body.contributions) ? body.contributions : []) {
-      if (!c || !planAgents.has(c.agent) || typeof c.answer !== "string") {
-        throw new HttpError(400, "invalid_contribution", "A contribution does not match the team plan.");
-      }
-      if (c.answer.length > limits.maxContributionChars) throw new HttpError(400, "too_long", "An expert answer is too long.");
-      const ok = verify(env, { kind: "expert", agent: c.agent, questionHash: hashText(question), answerHash: hashText(c.answer) }, c.signature);
-      if (!ok) {
-        throw new HttpError(400, "unverified_contribution",
-          `The answer attributed to ${c.agent} was not produced by this server's expert call, so it cannot be combined.`);
-      }
-      contributions.push({ agent: c.agent, answer: c.answer });
-    }
-    if (!contributions.length) throw new HttpError(400, "no_contributions", "No verified expert answers to combine.");
-    guard(req, ctx, limits);
-    const ava = bySlug.get(ORCHESTRATOR);
-    const modelId = modelIdFor(ava.model, env);
-    const client = clientFactory(env);
-    async function* run() {
-      yield {
-        type: "meta", stage: "synthesize", agent: ORCHESTRATOR, firstName: ava.firstName, model: ava.model, modelId,
-        contributors: contributions.map((c) => c.agent),
-      };
-      let final;
-      for await (const ev of streamClaude(client, {
-        modelId,
-        system: synthesisSystemPrompt(data),
-        messages: [{ role: "user", content: synthesisUserMessage(question, plan, contributions, bySlug) }],
-        maxTokens: limits.synthMaxTokens,
-        effort: "medium",
-      })) {
-        if (ev.type === "delta") yield ev;
-        else final = ev;
-      }
-      if (final.stopReason === "refusal") {
-        yield { type: "refusal", message: "Claude declined to combine these answers.", category: final.stopDetails?.category ?? null };
-      }
-      yield {
-        type: "done", stopReason: final.stopReason, model: final.model, fallbackUsed: final.fallbackUsed,
-        usage: final.usage, truncated: final.stopReason === "max_tokens", contributors: contributions.map((c) => c.agent),
-      };
-    }
-    return ndjson(run(), log);
-  }
-
-  // ---------------------------------------------------------------- router
   return async function handle(req, ctx = {}) {
     const limits = limitsFrom(env);
     const url = new URL(req.url);
@@ -328,19 +174,45 @@ export function createHandler({ data, env = process.env, clientFactory = makeCli
         }
         return json(200, { ok: true });
       }
-      const endpoints = { "/api/expert": expert, "/api/team/route": route, "/api/team/synthesize": synthesize };
-      if (req.method === "POST" && endpoints[p]) {
+      if (p === "/api/jobs") {
+        if (req.method !== "POST") throw new HttpError(405, "method_not_allowed", "Method not allowed.");
         requirePassword(req); // first, before reading or validating anything
-        return await endpoints[p](req, ctx, limits);
+        return await createJob(req, ctx, limits);
       }
-      if (["/api/config", "/api/auth", "/api/expert", "/api/team/route", "/api/team/synthesize"].includes(p)) {
-        throw new HttpError(405, "method_not_allowed", "Method not allowed.");
+      const m = p.match(/^\/api\/jobs\/([^/]+)$/);
+      if (m) {
+        if (req.method !== "GET") throw new HttpError(405, "method_not_allowed", "Method not allowed.");
+        requirePassword(req);
+        return await getJob(req, m[1], url);
       }
+      if (["/api/config", "/api/auth"].includes(p)) throw new HttpError(405, "method_not_allowed", "Method not allowed.");
       throw new HttpError(404, "not_found", "Unknown API endpoint.");
     } catch (err) {
       if (err instanceof HttpError) return errorResponse(err);
       log("unhandled", err?.message);
-      return json(500, { error: { code: "internal_error", message: "Unexpected server error." } });
+      return json(500, { error: { code: "internal_error", message: "Unexpected server error. Please try again." } });
+    }
+  };
+}
+
+/**
+ * Background worker (POST /api/run-job). Netlify answers the caller with 202 immediately;
+ * this keeps running for up to 15 minutes and writes progress to the job store.
+ */
+export function createWorker({ data, env = process.env, getStore, clientFactory, logger = console } = {}) {
+  return async function work(req) {
+    try {
+      if (!checkPassword(env, req.headers.get("x-app-password"))) {
+        logger.error?.("[experts21 worker] rejected: bad password");
+        return new Response(null, { status: 401 });
+      }
+      const body = JSON.parse((await req.text()) || "{}");
+      const store = await getStore();
+      const result = await runJob({ jobId: body.jobId, token: body.runToken, store, env, data, clientFactory, logger });
+      return json(200, result);
+    } catch (err) {
+      logger.error?.("[experts21 worker] crashed", err?.message);
+      return new Response(null, { status: 500 });
     }
   };
 }

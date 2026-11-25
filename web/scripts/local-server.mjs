@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { handleNodeRequest } from "./node-adapter.mjs";
+import { handleNodeBackground, handleNodeRequest } from "./node-adapter.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(here, "..");
@@ -13,12 +13,18 @@ const DIST = path.join(WEB, "dist");
 const PORT = Number(process.env.PORT || 8888);
 
 const { default: teamData } = await import("../server/_generated/team-data.mjs");
-const { createHandler } = await import("../server/lib/handler.mjs");
-const handler = createHandler({ data: teamData, env: process.env });
+const { createHandler, createWorker } = await import("../server/lib/handler.mjs");
+const { defaultStore } = await import("../server/lib/store.mjs");
+const handler = createHandler({ data: teamData, env: process.env, getStore: defaultStore });
+const worker = createWorker({ data: teamData, env: process.env, getStore: defaultStore });
 
 const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".json": "application/json", ".png": "image/png", ".ico": "image/x-icon" };
 
 export const server = http.createServer((req, res) => {
+  if (req.url.startsWith("/api/run-job")) {
+    handleNodeBackground(worker, req, res).catch((err) => console.error(err));
+    return;
+  }
   if (req.url.startsWith("/api/")) {
     handleNodeRequest(handler, req, res).catch((err) => {
       console.error(err);

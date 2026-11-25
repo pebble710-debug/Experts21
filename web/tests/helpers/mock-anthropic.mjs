@@ -31,6 +31,10 @@ export async function startMockAnthropic(options = {}) {
   const state = {
     requests: [],
     mode: options.mode ?? "ok", // "ok" | "auth_error" | "overloaded"
+    delayMs: options.delayMs ?? 0, // simulated model latency per request
+    failFor: options.failFor ?? null, // expert first name whose requests fail with 529
+    active: 0, // requests currently in flight
+    maxActive: 0, // peak concurrency observed
     planExperts: options.planExperts ?? [
       { agent: "lease-negotiation-specialist", reason: "Lease terms", brief: "Review the lease terms." },
       { agent: "financial-modeling-funding-strategist", reason: "Affordability", brief: "Test the rent against sales." },
@@ -40,9 +44,18 @@ export async function startMockAnthropic(options = {}) {
   const server = http.createServer((req, res) => {
     let raw = "";
     req.on("data", (c) => (raw += c));
-    req.on("end", () => {
+    req.on("end", async () => {
       const body = raw ? JSON.parse(raw) : {};
-      state.requests.push({ path: req.url, headers: req.headers, body });
+      state.requests.push({ path: req.url, headers: req.headers, body, at: Date.now() });
+      state.active += 1;
+      state.maxActive = Math.max(state.maxActive, state.active);
+      res.on("close", () => (state.active -= 1));
+      if (state.delayMs) await new Promise((r) => setTimeout(r, state.delayMs));
+      const sysText = systemText(body);
+      if (state.failFor && sysText.includes(`- **Name:** ${state.failFor}`)) {
+        res.writeHead(529, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }));
+      }
       if (state.mode === "auth_error") {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ type: "error", error: { type: "authentication_error", message: "invalid x-api-key" } }));

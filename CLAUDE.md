@@ -130,7 +130,7 @@ python3 scripts/validate_team.py
 
 ## Web app (`web/`)
 
-`web/` is a React app with a Netlify Function (`web/netlify/functions/api.mjs`) that lets users chat with any expert or **Ask the Whole Team**: Ava routes the question, each chosen expert answers in its own Claude API call, and Ava combines the signed answers.
+`web/` is a React app that lets users chat with any expert or **Ask the Whole Team**: Ava routes the question, the chosen experts answer in parallel (each in its own Claude API call), and Ava combines their answers. A fast Netlify Function (`web/netlify/functions/api.mjs`) creates jobs and reports their status. All Claude work runs in a Netlify Background Function (`web/netlify/functions/run-job.mjs`, 15-minute limit), and job progress is stored in Netlify Blobs, because a whole-team answer takes longer than the 60-second limit for normal functions.
 
 - The build (`web/scripts/build-data.mjs`) loads the agents, skills, knowledge folders, research, and these ground rules from this repository, so changes here flow into the site on the next build.
 - The Anthropic API key (`ANTHROPIC_API_KEY`) and the optional `APP_PASSWORD` are Netlify environment variables. They are read only by the function and never shipped to the browser.

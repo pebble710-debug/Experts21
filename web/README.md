@@ -13,42 +13,61 @@ The app is built from this repository. It does not invent its own experts: the b
 | Feature | How it works |
 |---|---|
 | **Expert sidebar** | All 26 experts, grouped by specialty (lifecycle phase), each showing first name, role, personality, and Claude model (`opus` / `sonnet` / `haiku`). Search by name, role, or topic. |
-| **Chat with one expert** | Pick an expert and ask questions. The server sends Claude that expert's full agent file, its preloaded shared skills, every file in its knowledge folder, the research files its folder README lists, and the CLAUDE.md ground rules, using the expert's assigned model. Answers stream in as they're written. |
-| **Ask the Whole Team** | A real three-stage workflow: **(1)** Ava routes the question by meaning and returns a structured plan (problems, chosen experts, a brief for each, experts left out). **(2)** Each chosen expert answers in its **own separate Claude call**, with its own model and prompt, up to 3 at a time. **(3)** Ava combines the verified answers into one recommendation with disagreements and next steps. The UI shows the routing plan, each expert's answer, and a **Contributors** list. |
-| **Proof of real coordination** | The server signs Ava's plan and every expert answer (HMAC). The synthesis step refuses answers that weren't produced by a real expert call from this server, so a combined answer can only contain real expert work. |
-| **Errors** | Clear messages for a missing or rejected API key, wrong password, rate limits, too-long questions, timeouts, and upstream errors. Each shows an error code. |
+| **Chat with one expert** | Pick an expert and ask questions. The server sends Claude that expert's full agent file, its preloaded shared skills, every file in its knowledge folder, the research files its folder README lists, and the CLAUDE.md ground rules, using the expert's assigned model. The answer appears as it is written (the page polls for progress about once a second). |
+| **Ask the Whole Team** | A real three-stage workflow: **(1)** Ava routes the question by meaning and returns a structured plan (problems, chosen experts, a brief for each, experts left out). **(2)** All chosen experts answer **at the same time**, each in its **own separate Claude call** with its own model and prompt. **(3)** Ava combines the verified answers into one recommendation with disagreements and next steps. The UI shows the routing plan, each expert's answer, and a **Contributors** list. |
+| **Real coordination, server-side** | The whole team workflow runs in one server-side background job: Ava's plan decides which specialists are called, their actual answers are passed verbatim to Ava's synthesis call, and the browser only reads the results. Nothing the browser sends can add or edit an expert answer. |
+| **Progress** | A status line shows the current stage ("Ava is choosing the right specialists…", "Specialists are answering in parallel (2 of 3 finished)…", "Ava is combining the answers…") with an elapsed-time counter. Each specialist card shows Waiting / Answering / Answered / Failed. |
+| **Errors and recovery** | Clear messages for a missing or rejected API key, wrong password, rate limits, too-long questions, timeouts, stalled jobs, and upstream errors, each with an error code. Short connection drops are retried automatically. If the connection stays down, **Try again** reconnects to the same job instead of paying for a new one. If one specialist fails, Ava still combines the others and notes the gap. |
 | **Responsive** | Desktop sidebar layout. On phones the expert list becomes a slide-out drawer. Light and dark themes follow the device setting. |
 
 ## Architecture
 
+All Claude work runs in a **Netlify Background Function**, which can run for up to 15 minutes. Netlify's normal and streaming functions stop after 60 seconds, and a whole-team answer (Ava, up to 5 specialists, then Ava again) can take a few minutes. The browser starts a job, then polls a fast status endpoint. Job progress and results are saved in **Netlify Blobs**, persistent storage shared by every function invocation, so nothing depends on in-memory state.
+
 ```text
-Browser (React, dist/)                         Netlify Function  /api/*  (server only)
-──────────────────────                         ─────────────────────────────────────────
-experts.json  (public: names, roles,           team-data.mjs (private: agent instructions,
-  personas, models; no prompts)                  skills, knowledge files, research, rules)
-                                               ANTHROPIC_API_KEY, APP_PASSWORD (env vars)
-  GET  /api/config  ──────────────────────▶   key configured? password required? limits
-  POST /api/auth    ──────────────────────▶   check APP_PASSWORD (server-side)
-  POST /api/expert  ──────────────────────▶   one expert  ──▶ Claude (expert's model) ──▶ streamed answer
-  POST /api/team/route ───────────────────▶   Ava (opus): JSON routing plan (signed)
-  POST /api/expert {team}  × N experts ───▶   each expert answers its brief (answer signed)
-  POST /api/team/synthesize ──────────────▶   Ava combines verified answers ──▶ streamed recommendation
+Browser (React, dist/)                    api.mjs  (fast, never calls Claude)          run-job.mjs  (background, ≤15 min)
+──────────────────────                    ───────────────────────────────────          ──────────────────────────────────
+GET  /api/config  ─────────────────────▶  key configured? password? limits
+POST /api/auth    ─────────────────────▶  check APP_PASSWORD
+POST /api/jobs {expert|team} ──────────▶  validate, password, rate limit,
+                                          save job (queued) ─▶ Netlify Blobs
+                 ◀── 202 {jobId, tokens}
+POST /api/run-job {jobId, runToken} ───────────────────────────────────────────────▶  202 at once, then:
+                                                                                     expert: 1 Claude call (its model)
+                                                                                     team:   Ava routes (JSON plan)
+                                                                                             → specialists in parallel
+                                                                                             → Ava combines
+                                                                                     saves progress every 2 s ─▶ Blobs
+GET  /api/jobs/:id?token=  (every ~1 s) ▶  read job from Blobs ─▶ stage, partial text, plan, answers
 ```
 
 - **Build time** (`scripts/build-data.mjs`, run by `npm run build`): reads the repository and writes
   - `src/generated/experts.json`: **public** directory data for the browser (no prompts, skills, or knowledge text).
-  - `server/_generated/team-data.mjs`: **private** data bundled into the function only.
+  - `server/_generated/team-data.mjs`: **private** data bundled into the functions only.
   - The build fails if there aren't exactly 26 agents, 24 specialists, and 24 skills, or if any knowledge folder, research file, or persona field is missing.
+- **Prompt size:** each expert's prompt holds its agent file, all its preloaded skills, every knowledge-folder file, its research files, a compact team directory, and the CLAUDE.md ground rules: about 6k–16k tokens.
+  - Planning documents that aren't business research (the roster, user guide, test results, model table) are left out.
+  - The long URL source lists at the end of each research file are trimmed. The findings are kept word for word.
+  - The orchestrator gets only the sections each stage needs.
+  - Each expert's system prompt is the same in single chat and team mode, so the prompt cache is reused between them.
 - **Models:** each agent's `model:` alias maps to `claude-opus-5-5`, `claude-sonnet-5-5`, or `claude-haiku-5-5`. You can override each family with `MODEL_OPUS` / `MODEL_SONNET` / `MODEL_HAIKU`.
   - Opus and Sonnet calls turn on Anthropic's server-side refusal fallback (`fallbacks: "default"`).
-  - Prompts are cached (`cache_control`), so repeat questions to the same expert cost much less.
-- **Streaming:** every endpoint streams newline-delimited JSON. This shows progress and keeps each request within Netlify's streaming-function time limit, instead of the shorter limit for non-streaming functions.
+  - Prompts are cached (`cache_control`).
+- **Job safety:**
+  - Each job has a random ID plus HMAC tokens. The poll token is needed to read a job, and the run token to start it.
+  - A job runs only once, even if the worker is invoked twice.
+  - A job stops at `JOB_DEADLINE_MS` (default 11 minutes).
+  - A job whose worker stops saving progress for 2 minutes is reported as `job_stalled`.
+- **Site protection:** the browser (not the server) starts the background worker, so this also works when the site sits behind Netlify's password or team-login protection.
 - **Code layout:**
-  - `netlify/functions/api.mjs`: the Netlify Function entry point.
-  - `server/lib/handler.mjs`: routing, validation, and the team workflow.
+  - `netlify/functions/api.mjs`: the fast API.
+  - `netlify/functions/run-job.mjs`: the background worker.
+  - `server/lib/handler.mjs`: endpoints and validation.
+  - `server/lib/jobs.mjs`: the job workflow.
+  - `server/lib/store.mjs`: Netlify Blobs on Netlify, files locally.
   - `server/lib/prompts.mjs`: prompt assembly.
   - `server/lib/anthropic.mjs`: the official `@anthropic-ai/sdk`.
-  - `server/lib/security.mjs`: password, rate limits, and signatures.
+  - `server/lib/security.mjs`: password, limits, and tokens.
 
 ## Security and cost protection
 
@@ -56,8 +75,8 @@ experts.json  (public: names, roles,           team-data.mjs (private: agent ins
 |---|---|
 | **API key stays on the server** | `ANTHROPIC_API_KEY` is read only inside the function (`process.env`). The browser only ever calls `/api/*` on this site. `npm run check:secrets` (also run by the tests) scans `dist/` and fails on any key pattern, any configured secret value, client code that reads a server env var, or private prompt text. |
 | **Optional password** | Set `APP_PASSWORD` and every expert endpoint requires it in the `x-app-password` header. The server checks it in constant time, before reading the request. The password is never in the bundle. The user types it, and it is kept only in the browser tab's `sessionStorage`. `/api/auth` allows 20 attempts per hour per IP. |
-| **Rate limits** | `RATE_LIMIT_PER_HOUR` per IP (default 60 Claude calls) and `GLOBAL_LIMIT_PER_HOUR` per function instance (default 400). A whole-team question uses 1 + N + 1 calls. **These limits are best-effort**: they're kept in memory, so they reset on cold starts and aren't shared between instances. For a hard cap, set a **spend limit in the Anthropic Console**. |
-| **Request limits** | Question ≤ `MAX_QUESTION_CHARS` (2,000); chat history ≤ `MAX_HISTORY_MESSAGES` (8) and `MAX_HISTORY_CHARS` (24,000); request body ≤ 200 KB; team size ≤ `MAX_TEAM_EXPERTS` (default 5, max 8); output caps `EXPERT_MAX_TOKENS` (4,000), `ROUTE_MAX_TOKENS` (3,000), `SYNTH_MAX_TOKENS` (5,000); `effort: "medium"`. |
+| **Rate limits** | `RATE_LIMIT_PER_HOUR` per IP (default 60 Claude calls) and `GLOBAL_LIMIT_PER_HOUR` per function instance (default 400). A whole-team question is charged `MAX_TEAM_EXPERTS + 2` calls (7 by default) when it starts. **These limits are best-effort**: they're kept in memory, so they reset on cold starts and aren't shared between instances. For a hard cap, set a **spend limit in the Anthropic Console**. |
+| **Request limits** | Question ≤ `MAX_QUESTION_CHARS` (2,000); chat history ≤ `MAX_HISTORY_MESSAGES` (8) and `MAX_HISTORY_CHARS` (24,000); request body ≤ 200 KB; team size ≤ `MAX_TEAM_EXPERTS` (default 5, max 8); output caps `EXPERT_MAX_TOKENS` (3,000), `TEAM_EXPERT_MAX_TOKENS` (2,200), `ROUTE_MAX_TOKENS` (2,500), `SYNTH_MAX_TOKENS` (3,500); target lengths are 300–500 words for one expert, 200–350 per team expert, and 450–700 for Ava's combined answer; `effort: "medium"`; whole job ≤ `JOB_DEADLINE_MS` (11 min). |
 | **Prompt-injection hygiene** | Owner messages and knowledge documents are treated as information, not instructions. Model output is rendered as Markdown without raw HTML. |
 | **Headers** | `netlify.toml` sets `nosniff`, `X-Frame-Options: DENY`, a strict referrer policy, and a restrictive permissions policy. |
 
@@ -153,6 +172,10 @@ npm run check:secrets
 
 The automated tests use a mock of the Anthropic API, so they don't spend money or need a key. **They don't check the quality of real Claude answers.** After deploying, try a real single-expert question and a real whole-team question.
 
+## Data storage
+
+Jobs (the question, any chat history you sent, progress, and answers) are stored in the Netlify Blobs store `experts21-jobs` for this site. Netlify creates it automatically, with no setup. The status endpoint returns a job only with its poll token, and never returns the stored chat history. To clear old jobs, delete the store in the Netlify UI (**Blobs**) or with the Netlify CLI.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -161,6 +184,8 @@ The automated tests use a mock of the Anthropic API, so they don't spend money o
 | "API key rejected" (`invalid_api_key`) | The key is wrong or revoked. Create a new one in the Anthropic Console. |
 | "Password required" (`unauthorized`) | Enter the `APP_PASSWORD`. If you changed it, reload the page. |
 | `rate_limited` | Wait for the hourly window to reset, or raise `RATE_LIMIT_PER_HOUR`. |
-| "The response ended early" / `function_timeout` | The function hit Netlify's time limit. Ask a shorter question, lower `MAX_TEAM_EXPERTS`, or lower `EXPERT_MAX_TOKENS`. |
+| `job_stalled` / `job_not_started` / `worker_not_started` | The background worker didn't start or stopped saving progress. Check **Logs → Functions → run-job** in Netlify, then try again. If you're on an old deploy, redeploy so `run-job` exists. |
+| `job_deadline` | A job ran past `JOB_DEADLINE_MS`. Ask a narrower question or lower `MAX_TEAM_EXPERTS`. |
+| `connection_lost` | Your connection dropped while the experts were working. Select **Try again** to reconnect to the same job. |
 | `model_not_found` | Your key can't use that model. Set `MODEL_OPUS` / `MODEL_SONNET` / `MODEL_HAIKU`. |
 | An expert's answer is missing from a team result | That expert's call failed. The card shows why, and Ava treats that area as an open question. |

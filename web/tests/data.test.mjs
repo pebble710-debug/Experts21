@@ -54,14 +54,21 @@ test("knowledge folders are loaded from knowledge/<agent>/ (including Marcus's s
   assert.equal(lease.content, fs.readFileSync(path.join(REPO, "knowledge/lease-negotiation-specialist/sample-brickell-lease.md"), "utf8"));
 });
 
-test("all 24 shared skills and the referenced research files are loaded verbatim", () => {
+test("all 24 shared skills and the referenced research are loaded (research minus its URL source list)", () => {
   assert.equal(Object.keys(teamData.skills).length, 24);
+  const META = ["docs/expert-roster.md", "docs/how-to-talk-to-your-experts.md", "docs/agent-brains.md"];
   for (const a of teamData.agents) {
     for (const s of a.skills) assert.ok(teamData.skills[s]?.body.includes("## Procedure"), `${a.slug}: ${s}`);
     for (const r of a.research) {
-      assert.equal(teamData.docs[r], fs.readFileSync(path.join(REPO, r), "utf8"), `${a.slug}: ${r}`);
+      assert.ok(!META.includes(r), `${a.slug}: planning meta-doc ${r} should not be in prompts`);
+      const original = fs.readFileSync(path.join(REPO, r), "utf8");
+      const cut = original.search(/\n## (Main )?[Ss]ources\b/);
+      const findings = cut === -1 ? original : original.slice(0, cut);
+      assert.ok(teamData.docs[r].startsWith(findings.trimEnd()), `${a.slug}: ${r} findings must be verbatim`);
     }
+    assert.ok(a.research.some((r) => /^docs\/0\d-/.test(r)) || ["orchestrator", "agent-builder"].includes(a.slug), `${a.slug} has research`);
   }
+  assert.match(teamData.teamDirectory, /`lease-negotiation-specialist` \| Marcus/);
   assert.match(teamData.groundRules, /Never invent regulatory requirements/);
 });
 

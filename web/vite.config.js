@@ -9,10 +9,13 @@ function localApi() {
     apply: "serve",
     async configureServer(server) {
       const { default: teamData } = await import("./server/_generated/team-data.mjs");
-      const { createHandler } = await import("./server/lib/handler.mjs");
-      const { handleNodeRequest } = await import("./scripts/node-adapter.mjs");
-      const handler = createHandler({ data: teamData, env: process.env });
+      const { createHandler, createWorker } = await import("./server/lib/handler.mjs");
+      const { defaultStore } = await import("./server/lib/store.mjs");
+      const { handleNodeBackground, handleNodeRequest } = await import("./scripts/node-adapter.mjs");
+      const handler = createHandler({ data: teamData, env: process.env, getStore: defaultStore });
+      const worker = createWorker({ data: teamData, env: process.env, getStore: defaultStore });
       server.middlewares.use((req, res, next) => {
+        if (req.url.startsWith("/api/run-job")) return void handleNodeBackground(worker, req, res).catch(next);
         if (!req.url.startsWith("/api/")) return next();
         handleNodeRequest(handler, req, res).catch(next);
       });

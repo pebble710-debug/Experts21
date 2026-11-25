@@ -36,20 +36,34 @@ test("the secret scanner fails when a secret is present", () => {
   }
 });
 
-test("function bundles with esbuild (Netlify's bundler) and serves /api/config", async () => {
+async function bundle(name) {
   const outdir = fs.mkdtempSync(path.join(os.tmpdir(), "experts21-fn-"));
-  const outfile = path.join(outdir, "api.mjs");
+  const outfile = path.join(outdir, `${name}.mjs`);
   await esbuild.build({
-    entryPoints: [path.join(WEB, "netlify/functions/api.mjs")],
+    entryPoints: [path.join(WEB, `netlify/functions/${name}.mjs`)],
     bundle: true, platform: "node", format: "esm", target: "node20", outfile, logLevel: "silent",
     banner: { js: "import { createRequire } from 'module'; const require = createRequire(import.meta.url);" },
   });
-  const size = fs.statSync(outfile).size;
-  assert.ok(size > 100_000, "bundle includes the generated team data");
-  const mod = await import(pathToFileURL(outfile).href);
-  assert.deepEqual(mod.config, { path: "/api/*" });
+  assert.ok(fs.statSync(outfile).size > 100_000, `${name} bundle includes the generated team data`);
+  return { outfile, outdir, mod: await import(pathToFileURL(outfile).href) };
+}
+
+test("netlify/functions contains only the two function entry points", () => {
+  const entries = fs.readdirSync(path.join(WEB, "netlify/functions")).sort();
+  assert.deepEqual(entries, ["api.mjs", "run-job.mjs"]);
+});
+
+test("API function bundles with esbuild (Netlify's bundler) and serves /api/config", async () => {
+  const { mod, outdir } = await bundle("api");
+  assert.deepEqual(mod.config, { path: ["/api/config", "/api/auth", "/api/jobs", "/api/jobs/*"] });
   const res = await mod.default(new Request("http://localhost/api/config"), {});
-  const body = await res.json();
-  assert.equal(body.experts, 26);
+  assert.equal((await res.json()).experts, 26);
+  fs.rmSync(outdir, { recursive: true, force: true });
+});
+
+test("background worker bundles with esbuild and is configured as a background function", async () => {
+  const { mod, outdir } = await bundle("run-job");
+  assert.deepEqual(mod.config, { path: "/api/run-job", background: true });
+  assert.equal(typeof mod.default, "function");
   fs.rmSync(outdir, { recursive: true, force: true });
 });

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Avatar, ErrorNote, Markdown, ModelBadge } from "./common.jsx";
+import { Avatar, ErrorNote, Markdown, ModelBadge, Progress } from "./common.jsx";
 
 const STAGES = [
   ["routing", "Routing"],
@@ -8,8 +8,15 @@ const STAGES = [
   ["done", "Done"],
 ];
 
+const STAGE_LABEL = {
+  queued: "Starting the team…",
+  routing: "Ava is reading your question and choosing the right specialists…",
+  experts: "Specialists are answering in parallel…",
+  synthesizing: "Ava is combining the answers…",
+};
+
 function Stepper({ stage, failed }) {
-  const idx = STAGES.findIndex(([s]) => s === stage);
+  const idx = Math.max(0, STAGES.findIndex(([s]) => s === (stage === "queued" ? "routing" : stage)));
   return (
     <ol className="stepper" aria-label="Team progress">
       {STAGES.map(([key, label], i) => (
@@ -38,10 +45,10 @@ function ExpertCard({ agent, slot, reason }) {
       </button>
       {open && (
         <div className="expert-card-body">
-          {slot.meta?.modelId && <p className="small muted">Model: {slot.done?.model || slot.meta.modelId}</p>}
+          <p className="small muted">Model: {slot.servedModel || slot.modelId}</p>
           {slot.text ? <Markdown>{slot.text}</Markdown> : <p className="muted">No answer yet.</p>}
-          {slot.done?.truncated && <p className="note">This answer reached the length limit and was cut off.</p>}
-          {slot.error && <p className="note">Not included in the combined answer: {slot.error}</p>}
+          {slot.truncated && <p className="note">This answer reached the length limit and was cut off.</p>}
+          {slot.error && <p className="note">Not included in the combined answer: {slot.error.message}</p>}
         </div>
       )}
     </div>
@@ -49,9 +56,16 @@ function ExpertCard({ agent, slot, reason }) {
 }
 
 export default function TeamRun({ run, ava, agentsBySlug, onRetry }) {
-  const s = run.state;
+  const s = run.view; // job status from GET /api/jobs/:id
   const plan = s?.plan;
-  const contributors = plan ? plan.experts.filter((e) => s.experts[e.agent]?.status === "done") : [];
+  const done = s?.status === "done";
+  const contributors = plan && s.experts ? plan.experts.filter((e) => s.experts[e.agent]?.status === "done") : [];
+  const working = !run.error && !done;
+  const answered = plan && s.experts ? plan.experts.filter((e) => ["done", "failed"].includes(s.experts[e.agent]?.status)).length : 0;
+  const label =
+    s?.stage === "experts" && plan
+      ? `${STAGE_LABEL.experts} (${answered} of ${plan.experts.length} finished)`
+      : STAGE_LABEL[s?.stage ?? "queued"] ?? "Working…";
   return (
     <div className="team-run" data-testid="team-run">
       <div className="team-run-head">
@@ -61,7 +75,8 @@ export default function TeamRun({ run, ava, agentsBySlug, onRetry }) {
           <span className="muted small">orchestrator</span>
         </div>
       </div>
-      <Stepper stage={s?.stage ?? "routing"} failed={Boolean(run.error)} />
+      <Stepper stage={s?.stage ?? "queued"} failed={Boolean(run.error)} />
+      <Progress label={label} since={run.startedAt} active={working} connection={run.connection} />
 
       {plan && (
         <div className="plan" data-testid="routing-plan">
@@ -96,16 +111,16 @@ export default function TeamRun({ run, ava, agentsBySlug, onRetry }) {
         </div>
       )}
 
-      {(s?.final || s?.stage === "synthesizing") && (
+      {s?.final && (
         <div className="final" data-testid="final-answer">
           <h3>Combined recommendation</h3>
-          {s.final ? <Markdown>{s.final}</Markdown> : <p className="muted">{ava.firstName} is combining the answers…</p>}
-          {s.finalMeta?.truncated && <p className="note">This answer reached the length limit and was cut off.</p>}
-          {s.refusal && <p className="note">{s.refusal}</p>}
+          {s.final.text ? <Markdown>{s.final.text}</Markdown> : <p className="muted">{ava.firstName} is combining the answers…</p>}
+          {s.final.truncated && <p className="note">This answer reached the length limit and was cut off.</p>}
+          {s.final.refusal && <p className="note">{s.final.refusal}</p>}
         </div>
       )}
 
-      {contributors.length > 0 && s?.stage === "done" && (
+      {contributors.length > 0 && done && (
         <div className="contributors" data-testid="contributors">
           <span className="small muted">Contributors:</span>
           {contributors.map((e) => {

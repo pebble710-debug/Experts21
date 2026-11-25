@@ -15,10 +15,14 @@ export function limitsFrom(env) {
     maxBodyBytes: 200_000,
     rateLimitPerHour: intEnv(env, "RATE_LIMIT_PER_HOUR", 60),
     globalLimitPerHour: intEnv(env, "GLOBAL_LIMIT_PER_HOUR", 400),
-    expertMaxTokens: intEnv(env, "EXPERT_MAX_TOKENS", 4000),
-    routeMaxTokens: intEnv(env, "ROUTE_MAX_TOKENS", 3000),
-    synthMaxTokens: intEnv(env, "SYNTH_MAX_TOKENS", 5000),
-    maxContributionChars: 16000,
+    // Output caps (include adaptive-thinking tokens). Length targets are set in the prompts.
+    expertMaxTokens: intEnv(env, "EXPERT_MAX_TOKENS", 3000),
+    teamExpertMaxTokens: intEnv(env, "TEAM_EXPERT_MAX_TOKENS", 2200),
+    routeMaxTokens: intEnv(env, "ROUTE_MAX_TOKENS", 2500),
+    synthMaxTokens: intEnv(env, "SYNTH_MAX_TOKENS", 3500),
+    // A whole job must finish well inside Netlify's 15-minute background-function limit.
+    jobDeadlineMs: intEnv(env, "JOB_DEADLINE_MS", 11 * 60_000),
+    callTimeoutMs: intEnv(env, "CLAUDE_CALL_TIMEOUT_MS", 4 * 60_000),
   };
 }
 
@@ -40,10 +44,11 @@ export function checkPassword(env, provided) {
 export function createRateLimiter() {
   const buckets = new Map();
   let global = { start: 0, count: 0 };
-  return function hit(ip, limits, now = Date.now()) {
+  // cost = number of Claude calls the request will make (a whole-team job costs 2 + experts).
+  return function hit(ip, limits, now = Date.now(), cost = 1) {
     const hour = 3_600_000;
     if (now - global.start >= hour) global = { start: now, count: 0 };
-    if (global.count >= limits.globalLimitPerHour) {
+    if (global.count + cost > limits.globalLimitPerHour) {
       return { ok: false, retryAfter: Math.ceil((global.start + hour - now) / 1000), scope: "global" };
     }
     const key = ip || "unknown";
@@ -52,11 +57,11 @@ export function createRateLimiter() {
       b = { start: now, count: 0 };
       buckets.set(key, b);
     }
-    if (b.count >= limits.rateLimitPerHour) {
+    if (b.count + cost > limits.rateLimitPerHour) {
       return { ok: false, retryAfter: Math.ceil((b.start + hour - now) / 1000), scope: "ip" };
     }
-    b.count += 1;
-    global.count += 1;
+    b.count += cost;
+    global.count += cost;
     if (buckets.size > 5000) buckets.clear(); // keep memory bounded
     return { ok: true, remaining: limits.rateLimitPerHour - b.count };
   };

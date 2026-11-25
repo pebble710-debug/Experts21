@@ -310,3 +310,5 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0
   .profile-role { display: block; font-size: 0.85rem; }
   .profile-persona { font-size: 0.82rem; }
 }
+.progress { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0; font-size: 0.86rem; color: var(--text-2); }
+.note.inline { margin: 0 0 0 4px; }

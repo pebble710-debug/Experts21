@@ -29,3 +29,22 @@ export async function handleNodeRequest(handler, req, res) {
   }
   res.end();
 }
+
+/**
+ * Emulates a Netlify Background Function locally: reply 202 immediately,
+ * then run the worker to completion without blocking the response.
+ */
+export async function handleNodeBackground(worker, req, res) {
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers)) if (typeof v === "string") headers.set(k, v);
+  const request = new Request(`http://${req.headers.host || "localhost"}${req.url}`, {
+    method: req.method,
+    headers,
+    body: Buffer.concat(chunks),
+  });
+  res.statusCode = 202;
+  res.end();
+  worker(request, { ip: req.socket.remoteAddress }).catch((err) => console.error("[local background]", err));
+}
